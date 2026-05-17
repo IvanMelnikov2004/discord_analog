@@ -1,0 +1,18 @@
+# Keys are NOT defined here — they come from the LIVEKIT_KEYS env var
+# (format: "API_KEY: API_SECRET") set in docker-compose.
+# This guarantees the secret matches what media-service signs tokens with.
+port: 7880
+bind_addresses:
+  - ""
+rtc:
+  tcp_port: 7881
+  udp_port: 7882
+  use_external_ip: false
+  enable_loopback_candidate: true
+logging:
+  level: info
+room:
+  auto_create: true
+  empty_timeout: 300
+turn:
+  enabled: false

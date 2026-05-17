@@ -1,0 +1,240 @@
+version: "3.9"
+
+# Shared env block.
+# IMPORTANT: POSTGRES_DB is intentionally NOT here — each service must set it
+# explicitly, otherwise YAML merge order would silently fall back to the
+# default `messenger` database and migrations end up in the wrong place.
+x-service-env: &service-env
+  ENVIRONMENT: ${ENVIRONMENT}
+  LOG_LEVEL: ${LOG_LEVEL}
+  POSTGRES_HOST: ${POSTGRES_HOST}
+  POSTGRES_PORT: ${POSTGRES_PORT}
+  POSTGRES_USER: ${POSTGRES_USER}
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+  MONGO_HOST: ${MONGO_HOST}
+  MONGO_PORT: ${MONGO_PORT}
+  MONGO_USER: ${MONGO_USER}
+  MONGO_PASSWORD: ${MONGO_PASSWORD}
+  MONGO_DB: ${MONGO_DB}
+  REDIS_HOST: ${REDIS_HOST}
+  REDIS_PORT: ${REDIS_PORT}
+  REDIS_PASSWORD: ${REDIS_PASSWORD}
+  JWT_SECRET_KEY: ${JWT_SECRET_KEY}
+  JWT_ALGORITHM: ${JWT_ALGORITHM}
+  JWT_ACCESS_TOKEN_EXPIRE_MINUTES: ${JWT_ACCESS_TOKEN_EXPIRE_MINUTES}
+  JWT_REFRESH_TOKEN_EXPIRE_DAYS: ${JWT_REFRESH_TOKEN_EXPIRE_DAYS}
+  CORS_ORIGINS: ${CORS_ORIGINS}
+
+services:
+  # ---------- Infrastructure ----------
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./infrastructure/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks: [backend]
+    ports:
+      - "5432:5432"
+
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_USER}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD}
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks: [backend]
+    ports:
+      - "27017:27017"
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks: [backend]
+    ports:
+      - "6379:6379"
+
+  livekit:
+    image: livekit/livekit-server:latest
+    restart: unless-stopped
+    command: --config /etc/livekit.yaml
+    environment:
+      # LiveKit reads keys from this env var when not present in the config.
+      # Format: "API_KEY: API_SECRET" — the same pair that media-service uses to sign JWTs.
+      LIVEKIT_KEYS: "${LIVEKIT_API_KEY}: ${LIVEKIT_API_SECRET}"
+    volumes:
+      - ./infrastructure/livekit/livekit.yaml:/etc/livekit.yaml:ro
+    ports:
+      - "7880:7880"
+      - "7881:7881"
+      - "7882:7882/udp"
+    networks: [backend]
+
+  # ---------- Backend services ----------
+  auth-service:
+    build:
+      context: .
+      dockerfile: services/auth-service/Dockerfile
+    restart: unless-stopped
+    environment:
+      <<: *service-env
+      SERVICE_NAME: auth-service
+      POSTGRES_DB: auth_db
+    depends_on:
+      postgres: { condition: service_healthy }
+    networks: [backend]
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.auth.rule=PathPrefix(`/api/auth`)"
+      - "traefik.http.services.auth.loadbalancer.server.port=8000"
+
+  user-service:
+    build:
+      context: .
+      dockerfile: services/user-service/Dockerfile
+    restart: unless-stopped
+    environment:
+      <<: *service-env
+      SERVICE_NAME: user-service
+      POSTGRES_DB: user_db
+    depends_on:
+      postgres: { condition: service_healthy }
+    networks: [backend]
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.users.rule=PathPrefix(`/api/users`)"
+      - "traefik.http.services.users.loadbalancer.server.port=8000"
+
+  channel-service:
+    build:
+      context: .
+      dockerfile: services/channel-service/Dockerfile
+    restart: unless-stopped
+    environment:
+      <<: *service-env
+      SERVICE_NAME: channel-service
+      POSTGRES_DB: channel_db
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    networks: [backend]
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.channels.rule=PathPrefix(`/api/channels`) || PathPrefix(`/api/invites`)"
+      - "traefik.http.services.channels.loadbalancer.server.port=8000"
+
+  message-service:
+    build:
+      context: .
+      dockerfile: services/message-service/Dockerfile
+    restart: unless-stopped
+    environment:
+      <<: *service-env
+      SERVICE_NAME: message-service
+    depends_on:
+      mongo: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    networks: [backend]
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.messages.rule=PathPrefix(`/api/messages`)"
+      - "traefik.http.services.messages.loadbalancer.server.port=8000"
+
+  gateway-service:
+    build:
+      context: .
+      dockerfile: services/gateway-service/Dockerfile
+    restart: unless-stopped
+    environment:
+      <<: *service-env
+      SERVICE_NAME: gateway-service
+      MESSAGE_SERVICE_URL: ${MESSAGE_SERVICE_URL}
+    depends_on:
+      redis: { condition: service_healthy }
+    networks: [backend]
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.ws.rule=PathPrefix(`/ws`)"
+      - "traefik.http.services.ws.loadbalancer.server.port=8000"
+
+  media-service:
+    build:
+      context: .
+      dockerfile: services/media-service/Dockerfile
+    restart: unless-stopped
+    environment:
+      <<: *service-env
+      SERVICE_NAME: media-service
+      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET}
+      LIVEKIT_URL: ${LIVEKIT_URL}
+    networks: [backend]
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.media.rule=PathPrefix(`/api/media`)"
+      - "traefik.http.services.media.loadbalancer.server.port=8000"
+
+  # ---------- Frontend ----------
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL}
+        VITE_WS_URL: ${VITE_WS_URL}
+        VITE_LIVEKIT_URL: ${VITE_LIVEKIT_URL}
+    restart: unless-stopped
+    networks: [backend]
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.frontend.rule=PathPrefix(`/`)"
+      - "traefik.http.routers.frontend.priority=1"
+      - "traefik.http.services.frontend.loadbalancer.server.port=80"
+
+  # ---------- API gateway ----------
+  traefik:
+    image: traefik:v3.0
+    restart: unless-stopped
+    command:
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+      - "--api.insecure=true"
+    ports:
+      - "80:80"
+      - "8080:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks: [backend]
+
+volumes:
+  postgres_data:
+  mongo_data:
+  redis_data:
+
+networks:
+  backend:
+    driver: bridge
