@@ -13,9 +13,14 @@
 
 services:
   traefik:
+    depends_on:
+      - dockerproxy
     command:
       - "--providers.docker=true"
       - "--providers.docker.exposedbydefault=false"
+      # Talk to Docker through the proxy (Traefik v3 can't negotiate the old
+      # API version against a modern daemon over the raw socket).
+      - "--providers.docker.endpoint=tcp://dockerproxy:2375"
       - "--entrypoints.web.address=:80"
       - "--entrypoints.websecure.address=:443"
       - "--entrypoints.web.http.redirections.entrypoint.to=websecure"
@@ -27,10 +32,8 @@ services:
       - "--certificatesresolvers.le.acme.httpchallenge.entrypoint=web"
       - "--api.insecure=true"
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
+      # No raw docker.sock here — it goes through dockerproxy now.
       - acme_data:/acme
-    # Note: the self-signed dynamic.yml / certs mounts from the base file are
-    # harmless here but unused — the ACME resolver takes over per-router below.
 
   auth-service:
     labels:

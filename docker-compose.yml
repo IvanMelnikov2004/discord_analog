@@ -82,10 +82,6 @@ services:
     image: livekit/livekit-server:latest
     restart: unless-stopped
     command: --config /etc/livekit.yaml
-    environment:
-      # LiveKit reads keys from this env var when not present in the config.
-      # Format: "API_KEY: API_SECRET" — the same pair that media-service uses to sign JWTs.
-      LIVEKIT_KEYS: "${LIVEKIT_API_KEY}: ${LIVEKIT_API_SECRET}"
     volumes:
       - ./infrastructure/livekit/livekit.yaml:/etc/livekit.yaml:ro
     ports:
@@ -236,13 +232,35 @@ services:
       - "traefik.http.routers.frontend.tls=true"
       - "traefik.http.services.frontend.loadbalancer.server.port=80"
 
+  # ---------- Docker socket proxy ----------
+  # Traefik v3 ignores DOCKER_API_VERSION and asks the daemon for a very old
+  # API version (1.24) that modern daemons reject. This proxy talks to the
+  # daemon with a compatible API and exposes a clean HTTP endpoint to Traefik.
+  # It also limits Traefik to read-only container listing (safer).
+  dockerproxy:
+    image: tecnativa/docker-socket-proxy:latest
+    restart: unless-stopped
+    environment:
+      CONTAINERS: "1"
+      NETWORKS: "1"
+      SERVICES: "1"
+      TASKS: "1"
+      POST: "0"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks: [backend]
+
   # ---------- API gateway ----------
   traefik:
     image: traefik:v3.0
     restart: unless-stopped
+    depends_on:
+      - dockerproxy
     command:
       - "--providers.docker=true"
       - "--providers.docker.exposedbydefault=false"
+      # Talk to Docker through the proxy instead of the raw socket.
+      - "--providers.docker.endpoint=tcp://dockerproxy:2375"
       - "--providers.file.filename=/etc/traefik/dynamic.yml"
       - "--entrypoints.web.address=:80"
       - "--entrypoints.websecure.address=:443"
@@ -255,7 +273,6 @@ services:
       - "443:443"
       - "8080:8080"
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
       - ./infrastructure/traefik/dynamic.yml:/etc/traefik/dynamic.yml:ro
       - ./infrastructure/traefik/certs:/certs:ro
     networks: [backend]

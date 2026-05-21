@@ -1,5 +1,13 @@
-# Keys come from the LIVEKIT_KEYS env var (set in docker-compose), so they
-# always match what media-service signs tokens with.
+# Keys are defined directly here to avoid env-var interpolation issues
+# (a stray space in "key: secret" via docker-compose caused token validation
+# to fail with "error in cryptographic primitive").
+#
+# IMPORTANT: these MUST match LIVEKIT_API_KEY / LIVEKIT_API_SECRET that
+# media-service uses to sign tokens. If you change the secret, change it in
+# BOTH places (.env and here).
+keys:
+  devkey: devsecret_Xk9mP2nQ5rV8wY3zB6cF1hJ4lM7oR0tU
+
 port: 7880
 bind_addresses:
   - ""
