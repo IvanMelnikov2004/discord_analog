@@ -21,17 +21,24 @@ export default function LoginPage() {
       const { data } = await api.post("/auth/login", { email, password });
       setTokens(data.access_token, data.refresh_token);
 
-      // Ensure user has an identity key on this device
-      const kp = await ensureIdentityKey();
-      const pub = await exportPublicKey(kp.publicKey);
-      try {
-        await api.post("/auth/keys", { key_type: "ecdh", key_data: pub });
-      } catch {
-        // already uploaded — ignore
-      }
-
       const me = await api.get("/auth/me");
       setUserId(me.data.id);
+
+      // Crypto is optional for getting in. If we're not in a secure context
+      // (e.g. served over plain http://), skip key setup but still let the
+      // user in — they'll see a clear warning when they try to chat/call.
+      try {
+        const kp = await ensureIdentityKey();
+        const pub = await exportPublicKey(kp.publicKey);
+        try {
+          await api.post("/auth/keys", { key_type: "ecdh", key_data: pub });
+        } catch {
+          // already uploaded — ignore
+        }
+      } catch (cryptoErr) {
+        console.warn("Crypto setup skipped:", cryptoErr);
+      }
+
       navigate("/");
     } catch (err: any) {
       setError(err?.response?.data?.detail || "Login failed");

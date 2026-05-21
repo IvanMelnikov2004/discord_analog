@@ -1,0 +1,30 @@
+[run]
+# Match by file path — keeps it working regardless of how Python resolves the
+# duplicate `app` package across services.
+include =
+    libs/shared-py/shared/*.py
+    services/auth-service/app/security.py
+    services/auth-service/app/routes.py
+    services/auth-service/app/schemas.py
+    services/auth-service/app/models.py
+    services/channel-service/app/routes.py
+    services/channel-service/app/schemas.py
+    services/channel-service/app/models.py
+    services/channel-service/app/deps.py
+    services/message-service/app/routes.py
+    services/message-service/app/schemas.py
+omit =
+    */alembic/*
+    */__init__.py
+    */main.py
+    */db.py
+    */config.py
+
+[report]
+show_missing = true
+skip_covered = false
+precision = 1
+exclude_lines =
+    pragma: no cover
+    raise NotImplementedError
+    if __name__ == .__main__.:

@@ -32,3 +32,6 @@ build/
 postgres_data/
 mongo_data/
 redis_data/
+
+# TLS certs (generated locally, never commit)
+infrastructure/traefik/certs/

@@ -79,10 +79,18 @@ async def refresh(payload: RefreshRequest, db: AsyncSession = Depends(get_db)) -
     result = await db.execute(select(RefreshToken).where(RefreshToken.token_hash == token_hash))
     token_row = result.scalar_one_or_none()
 
+    # Some DBs (notably SQLite via aiosqlite) return naive datetimes even when
+    # the column is TIMESTAMP WITH TIME ZONE. Normalize to UTC-aware before
+    # comparison to keep the prod (Postgres) and test (SQLite) paths identical.
+    now_utc = datetime.now(timezone.utc)
+    expires_at = token_row.expires_at if token_row else None
+    if expires_at is not None and expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+
     if (
         token_row is None
         or token_row.revoked
-        or token_row.expires_at < datetime.now(timezone.utc)
+        or expires_at < now_utc
     ):
         raise HTTPException(status_code=401, detail="Invalid refresh token")
 

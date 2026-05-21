@@ -32,10 +32,16 @@ export default function RegisterPage() {
         // profile may already exist
       }
 
-      // Generate identity ECDH key, upload public part
-      const kp = await ensureIdentityKey();
-      const pub = await exportPublicKey(kp.publicKey);
-      await api.post("/auth/keys", { key_type: "ecdh", key_data: pub });
+      // Generate identity ECDH key, upload public part.
+      // Non-fatal: over plain http:// Web Crypto is unavailable, but the
+      // account is already created — let the user in with a console warning.
+      try {
+        const kp = await ensureIdentityKey();
+        const pub = await exportPublicKey(kp.publicKey);
+        await api.post("/auth/keys", { key_type: "ecdh", key_data: pub });
+      } catch (cryptoErr) {
+        console.warn("Crypto setup skipped:", cryptoErr);
+      }
 
       navigate("/");
     } catch (err: any) {

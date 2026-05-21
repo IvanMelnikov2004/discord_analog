@@ -74,8 +74,67 @@ ADMINISTRATOR      = 1 << 31
 
 Эффективные пермиссии = `OR` всех ролей участника + per-room overrides.
 
-## Что НЕ входит в MVP (на будущее)
+## Деплой на сервер (HTTPS обязателен!)
 
+**Важно:** Web Crypto API (шифрование) и `getUserMedia` (звонки) работают
+**только в secure context** — `https://` или `http://localhost`. По `http://<IP>`
+регистрация падает с "Registration failed", чат пишет "нет ключа отправителя",
+войс — "getUserMedia undefined". Это ограничение браузера, не баг приложения.
+
+### Вариант A — nip.io + Let's Encrypt (РЕКОМЕНДУЕТСЯ для сервера без домена)
+
+`nip.io` — бесплатный DNS: `94-103-13-192.nip.io` автоматически резолвится в
+`94.103.13.192`, без регистрации. Это настоящее доменное имя, поэтому
+Let's Encrypt выдаст на него **доверенный** сертификат — без предупреждений
+браузера, WSS и звонки работают сразу.
+
+Требования: порты **80 и 443 открыты** из интернета (80 нужен для ACME-проверки).
+
+```bash
+# 1. В .env прописать домен и почту:
+#    DOMAIN=94-103-13-192.nip.io          (свой IP через дефисы)
+#    ACME_EMAIL=you@example.com           (реальная почта)
+#    VITE_API_BASE_URL=https://94-103-13-192.nip.io/api
+#    VITE_WS_URL=wss://94-103-13-192.nip.io/ws
+#    VITE_LIVEKIT_URL=wss://94-103-13-192.nip.io
+#    CORS_ORIGINS=...,https://94-103-13-192.nip.io
+
+# 2. Пересобрать фронт (VITE_* вшиваются при сборке!) и поднять с prod-оверрайдом
+docker compose build frontend
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+
+# 3. Открыть https://94-103-13-192.nip.io
+#    Первый запрос может занять 10-30с пока Traefik получает сертификат.
+```
+
+### Вариант B — self-signed (если порт 80 закрыт / нет доступа извне)
+
+```bash
+cd infrastructure/traefik
+./gen-cert.sh 94.103.13.192
+cd ../..
+
+# В .env: VITE_* на https://94.103.13.192/... (как в варианте A, но с IP)
+docker compose build frontend
+docker compose up -d              # БЕЗ prod-оверрайда
+
+# Открыть https://94.103.13.192 -> браузер ругнётся на сертификат ->
+# "Дополнительно" -> "Перейти". ВАЖНО: Chrome может блокировать WSS к
+# self-signed. Если чат/звонки не подключаются — используй вариант A.
+```
+
+### Звонки через интернет — порты firewall
+
+LiveKit раздаёт медиа напрямую по UDP/TCP, минуя Traefik. На firewall сервера
+открой для входящих:
+- **7881/tcp** и **7882/udp** — медиапотоки LiveKit
+- **443/tcp**, **80/tcp** — веб + сигналинг
+
+`livekit.yaml` уже выставлен с `use_external_ip: true` — сервер сам определит
+свой публичный IP через STUN. Если медиа не идёт, в `livekit.yaml` раскомментируй
+`node_ip: 94.103.13.192` с явным IP.
+
+## Что НЕ входит в MVP (на будущее)
 - [ ] Поиск по сообщениям (blind index)
 - [ ] OAuth (Google/GitHub)
 - [ ] Метрики Prometheus + Grafana
@@ -84,7 +143,7 @@ ADMINISTRATOR      = 1 << 31
 - [ ] Демонстрация экрана
 - [ ] Push-уведомления
 - [ ] E2E-тесты Playwright
-- [ ] Production TLS (Traefik + Let's Encrypt)
+- [ ] TURN-сервер для строгих NAT
 - [ ] Rate limiting
 
 ## Разработка

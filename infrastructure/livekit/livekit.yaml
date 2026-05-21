@@ -1,18 +1,29 @@
-# Keys are NOT defined here — they come from the LIVEKIT_KEYS env var
-# (format: "API_KEY: API_SECRET") set in docker-compose.
-# This guarantees the secret matches what media-service signs tokens with.
+# Keys come from the LIVEKIT_KEYS env var (set in docker-compose), so they
+# always match what media-service signs tokens with.
 port: 7880
 bind_addresses:
   - ""
+
 rtc:
   tcp_port: 7881
   udp_port: 7882
-  use_external_ip: false
-  enable_loopback_candidate: true
+  # For real calls over the internet the server must advertise its PUBLIC IP
+  # in ICE candidates. With use_external_ip: true LiveKit auto-detects it via
+  # STUN. If detection misbehaves, hardcode the top-level node_ip below instead.
+  use_external_ip: true
+  enable_loopback_candidate: false
+
+# Uncomment and set to your server's public IP if STUN auto-detection fails:
+# node_ip: 94.103.13.192
+
 logging:
   level: info
+
 room:
   auto_create: true
   empty_timeout: 300
+
+# Built-in TURN over TLS. Helps clients behind strict NATs/firewalls connect.
+# For a quick demo you can leave this disabled and rely on host-direct UDP.
 turn:
   enabled: false

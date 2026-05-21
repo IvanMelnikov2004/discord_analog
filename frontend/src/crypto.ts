@@ -8,7 +8,31 @@
  *
  * For MVP we focus on group sender-key generation, marshalling public keys,
  * and AES-GCM encrypt/decrypt of message bodies.
+ *
+ * IMPORTANT: window.crypto.subtle is ONLY available in a "secure context"
+ * (https:// or http://localhost). Over plain http:// on a remote IP it is
+ * undefined and every call here throws. assertCryptoAvailable() gives a clear
+ * error instead of a cryptic "cannot read properties of undefined".
  */
+
+/** Returns true if Web Crypto is usable (secure context). */
+export function isCryptoAvailable(): boolean {
+  return (
+    typeof window !== "undefined" &&
+    !!window.isSecureContext &&
+    !!window.crypto &&
+    !!window.crypto.subtle
+  );
+}
+
+export function assertCryptoAvailable(): void {
+  if (!isCryptoAvailable()) {
+    throw new Error(
+      "Шифрование недоступно: откройте приложение по HTTPS (или http://localhost). " +
+        "Web Crypto API не работает на незащищённом соединении."
+    );
+  }
+}
 
 const DB_NAME = "messenger-crypto";
 const DB_VERSION = 1;
@@ -67,6 +91,7 @@ export function b64ToBuf(b64: string): ArrayBuffer {
 // ---------- ECDH P-256 (identity key) ----------
 
 export async function ensureIdentityKey(): Promise<CryptoKeyPair> {
+  assertCryptoAvailable();
   const existing = await idbGet<CryptoKeyPair>("identity-ecdh");
   if (existing) return existing;
 
@@ -97,6 +122,7 @@ export async function importEcdhPublicKey(b64: string): Promise<CryptoKey> {
 // ---------- AES-256-GCM (sender keys) ----------
 
 export async function generateSenderKey(): Promise<CryptoKey> {
+  assertCryptoAvailable();
   return crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, true, ["encrypt", "decrypt"]);
 }
 

@@ -46,6 +46,16 @@ def _gen_invite_code(n: int = 8) -> str:
     return "".join(secrets.choice(alphabet) for _ in range(n))
 
 
+def _is_expired(expires_at: datetime) -> bool:
+    """Compare timezone-aware "now" with a possibly-naive DB datetime.
+
+    SQLite via aiosqlite drops tzinfo; Postgres preserves it. Normalize.
+    """
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    return expires_at < datetime.now(timezone.utc)
+
+
 # ---------- Channels ----------
 
 @router.post("", response_model=ChannelResponse, status_code=201)
@@ -450,7 +460,7 @@ async def get_invite(code: str, db: AsyncSession = Depends(get_db)) -> InviteRes
     inv = result.scalar_one_or_none()
     if not inv:
         raise HTTPException(404, "Invite not found")
-    if inv.expires_at < datetime.now(timezone.utc):
+    if _is_expired(inv.expires_at):
         raise HTTPException(410, "Invite expired")
     if inv.max_uses is not None and inv.uses >= inv.max_uses:
         raise HTTPException(410, "Invite exhausted")
@@ -467,7 +477,7 @@ async def accept_invite(
     inv = result.scalar_one_or_none()
     if not inv:
         raise HTTPException(404, "Invite not found")
-    if inv.expires_at < datetime.now(timezone.utc):
+    if _is_expired(inv.expires_at):
         raise HTTPException(410, "Invite expired")
     if inv.max_uses is not None and inv.uses >= inv.max_uses:
         raise HTTPException(410, "Invite exhausted")

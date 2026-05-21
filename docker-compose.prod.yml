@@ -1,0 +1,77 @@
+# Production HTTPS via Let's Encrypt + nip.io.
+#
+# Usage:
+#   1. Set DOMAIN in .env to <your-ip-with-dashes>.nip.io
+#      e.g. for 94.103.13.192:  DOMAIN=94-103-13-192.nip.io
+#   2. Set ACME_EMAIL in .env to a real email.
+#   3. Make sure ports 80 and 443 are reachable from the internet.
+#   4. Rebuild frontend with the matching VITE_* urls (see .env.example).
+#   5. docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# Traefik will fetch a real, browser-trusted certificate for ${DOMAIN}
+# automatically — no warnings, WSS and getUserMedia work out of the box.
+
+services:
+  traefik:
+    command:
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+      - "--entrypoints.web.http.redirections.entrypoint.to=websecure"
+      - "--entrypoints.web.http.redirections.entrypoint.scheme=https"
+      # ACME / Let's Encrypt via HTTP-01 challenge on port 80
+      - "--certificatesresolvers.le.acme.email=${ACME_EMAIL}"
+      - "--certificatesresolvers.le.acme.storage=/acme/acme.json"
+      - "--certificatesresolvers.le.acme.httpchallenge=true"
+      - "--certificatesresolvers.le.acme.httpchallenge.entrypoint=web"
+      - "--api.insecure=true"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - acme_data:/acme
+    # Note: the self-signed dynamic.yml / certs mounts from the base file are
+    # harmless here but unused — the ACME resolver takes over per-router below.
+
+  auth-service:
+    labels:
+      - "traefik.http.routers.auth.rule=Host(`${DOMAIN}`) && PathPrefix(`/api/auth`)"
+      - "traefik.http.routers.auth.tls.certresolver=le"
+
+  user-service:
+    labels:
+      - "traefik.http.routers.users.rule=Host(`${DOMAIN}`) && PathPrefix(`/api/users`)"
+      - "traefik.http.routers.users.tls.certresolver=le"
+
+  channel-service:
+    labels:
+      - "traefik.http.routers.channels.rule=Host(`${DOMAIN}`) && (PathPrefix(`/api/channels`) || PathPrefix(`/api/invites`))"
+      - "traefik.http.routers.channels.tls.certresolver=le"
+
+  message-service:
+    labels:
+      - "traefik.http.routers.messages.rule=Host(`${DOMAIN}`) && PathPrefix(`/api/messages`)"
+      - "traefik.http.routers.messages.tls.certresolver=le"
+
+  gateway-service:
+    labels:
+      - "traefik.http.routers.ws.rule=Host(`${DOMAIN}`) && PathPrefix(`/ws`)"
+      - "traefik.http.routers.ws.tls.certresolver=le"
+
+  media-service:
+    labels:
+      - "traefik.http.routers.media.rule=Host(`${DOMAIN}`) && PathPrefix(`/api/media`)"
+      - "traefik.http.routers.media.tls.certresolver=le"
+
+  livekit:
+    labels:
+      - "traefik.http.routers.livekit.rule=Host(`${DOMAIN}`) && PathPrefix(`/rtc`)"
+      - "traefik.http.routers.livekit.tls.certresolver=le"
+
+  frontend:
+    labels:
+      - "traefik.http.routers.frontend.rule=Host(`${DOMAIN}`)"
+      - "traefik.http.routers.frontend.priority=1"
+      - "traefik.http.routers.frontend.tls.certresolver=le"
+
+volumes:
+  acme_data:

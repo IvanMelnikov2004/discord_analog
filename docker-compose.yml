@@ -93,6 +93,14 @@ services:
       - "7881:7881"
       - "7882:7882/udp"
     networks: [backend]
+    labels:
+      # Expose LiveKit signaling (WebSocket) over TLS at https://<host>/rtc
+      # so the browser can reach it from a secure context.
+      - "traefik.enable=true"
+      - "traefik.http.routers.livekit.rule=PathPrefix(`/rtc`)"
+      - "traefik.http.routers.livekit.entrypoints=websecure"
+      - "traefik.http.routers.livekit.tls=true"
+      - "traefik.http.services.livekit.loadbalancer.server.port=7880"
 
   # ---------- Backend services ----------
   auth-service:
@@ -110,6 +118,8 @@ services:
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.auth.rule=PathPrefix(`/api/auth`)"
+      - "traefik.http.routers.auth.entrypoints=websecure"
+      - "traefik.http.routers.auth.tls=true"
       - "traefik.http.services.auth.loadbalancer.server.port=8000"
 
   user-service:
@@ -127,6 +137,8 @@ services:
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.users.rule=PathPrefix(`/api/users`)"
+      - "traefik.http.routers.users.entrypoints=websecure"
+      - "traefik.http.routers.users.tls=true"
       - "traefik.http.services.users.loadbalancer.server.port=8000"
 
   channel-service:
@@ -145,6 +157,8 @@ services:
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.channels.rule=PathPrefix(`/api/channels`) || PathPrefix(`/api/invites`)"
+      - "traefik.http.routers.channels.entrypoints=websecure"
+      - "traefik.http.routers.channels.tls=true"
       - "traefik.http.services.channels.loadbalancer.server.port=8000"
 
   message-service:
@@ -162,6 +176,8 @@ services:
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.messages.rule=PathPrefix(`/api/messages`)"
+      - "traefik.http.routers.messages.entrypoints=websecure"
+      - "traefik.http.routers.messages.tls=true"
       - "traefik.http.services.messages.loadbalancer.server.port=8000"
 
   gateway-service:
@@ -179,6 +195,8 @@ services:
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.ws.rule=PathPrefix(`/ws`)"
+      - "traefik.http.routers.ws.entrypoints=websecure"
+      - "traefik.http.routers.ws.tls=true"
       - "traefik.http.services.ws.loadbalancer.server.port=8000"
 
   media-service:
@@ -196,6 +214,8 @@ services:
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.media.rule=PathPrefix(`/api/media`)"
+      - "traefik.http.routers.media.entrypoints=websecure"
+      - "traefik.http.routers.media.tls=true"
       - "traefik.http.services.media.loadbalancer.server.port=8000"
 
   # ---------- Frontend ----------
@@ -212,6 +232,8 @@ services:
       - "traefik.enable=true"
       - "traefik.http.routers.frontend.rule=PathPrefix(`/`)"
       - "traefik.http.routers.frontend.priority=1"
+      - "traefik.http.routers.frontend.entrypoints=websecure"
+      - "traefik.http.routers.frontend.tls=true"
       - "traefik.http.services.frontend.loadbalancer.server.port=80"
 
   # ---------- API gateway ----------
@@ -221,13 +243,21 @@ services:
     command:
       - "--providers.docker=true"
       - "--providers.docker.exposedbydefault=false"
+      - "--providers.file.filename=/etc/traefik/dynamic.yml"
       - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+      # Redirect all plain HTTP to HTTPS so Web Crypto / getUserMedia work.
+      - "--entrypoints.web.http.redirections.entrypoint.to=websecure"
+      - "--entrypoints.web.http.redirections.entrypoint.scheme=https"
       - "--api.insecure=true"
     ports:
       - "80:80"
+      - "443:443"
       - "8080:8080"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./infrastructure/traefik/dynamic.yml:/etc/traefik/dynamic.yml:ro
+      - ./infrastructure/traefik/certs:/certs:ro
     networks: [backend]
 
 volumes:
