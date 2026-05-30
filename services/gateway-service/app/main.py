@@ -66,6 +66,9 @@ async def ws_endpoint(websocket: WebSocket) -> None:
 
         user_id = UUID(payload.sub)
         await manager.register(user_id, websocket)
+        # Always subscribe the connection to its own user-scoped channel —
+        # this is how moderation events (mute/kick/ban/role) reach the client.
+        await manager.subscribe(user_id, f"user:{user_id}")
         await websocket.send_text(
             json.dumps({"type": "auth.ok", "data": {"user_id": str(user_id)}})
         )
@@ -82,7 +85,9 @@ async def ws_endpoint(websocket: WebSocket) -> None:
             op = msg.get("op")
             if op == "subscribe":
                 ch = msg.get("channel", "")
-                if isinstance(ch, str) and (ch.startswith("room:") or ch.startswith("dm:")):
+                if isinstance(ch, str) and (
+                    ch.startswith("room:") or ch.startswith("dm:") or ch.startswith("user:")
+                ):
                     await manager.subscribe(user_id, ch)
                     await websocket.send_text(
                         json.dumps({"type": "subscribed", "data": {"channel": ch}})

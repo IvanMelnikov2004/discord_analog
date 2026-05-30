@@ -84,6 +84,11 @@ class ChannelMember(Base):
     user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False, index=True)
     nickname: Mapped[str | None] = mapped_column(String(100), nullable=True)
     muted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # If set, the mute expires at this UTC time. NULL means "permanent until
+    # explicitly unmuted". Always check together with `muted`.
+    muted_until: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     joined_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

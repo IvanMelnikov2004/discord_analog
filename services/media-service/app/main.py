@@ -1,7 +1,8 @@
 from contextlib import asynccontextmanager
 from uuid import UUID
 
-from fastapi import Depends, FastAPI, HTTPException
+import httpx
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from livekit import api
 from pydantic import BaseModel, Field
@@ -33,6 +34,9 @@ app.add_middleware(
 class TokenRequest(BaseModel):
     room_id: UUID
     identity: str | None = None
+    # Channel that owns the room. When present, the server checks the caller's
+    # mute status in that channel and disables `can_publish` if muted.
+    channel_id: UUID | None = None
 
 
 class TokenResponse(BaseModel):
@@ -40,6 +44,28 @@ class TokenResponse(BaseModel):
     url: str
     room: str
     identity: str
+    # True when the issued token allows publishing (microphone). False when the
+    # user is muted in the channel.
+    can_publish: bool = True
+
+
+async def _is_muted_in_channel(channel_id: str, auth_header: str | None) -> bool:
+    """Ask channel-service whether the caller is currently muted there.
+
+    Fail-open here (mute is a soft restriction; voice still works on errors —
+    moderators can re-mute). For stricter behavior, flip to fail-closed.
+    """
+    if not channel_id or not auth_header:
+        return False
+    url = f"{settings.CHANNEL_SERVICE_URL}/api/channels/{channel_id}/me/permissions"
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            resp = await client.get(url, headers={"Authorization": auth_header})
+        if resp.status_code != 200:
+            return False
+        return bool(resp.json().get("muted"))
+    except Exception:
+        return False
 
 
 @app.get("/health")
@@ -49,15 +75,22 @@ async def health() -> dict[str, str]:
 
 @app.post("/api/media/token", response_model=TokenResponse)
 async def issue_token(
-    payload: TokenRequest, current: CurrentUser = Depends(get_current_user)
+    payload: TokenRequest,
+    request: Request,
+    current: CurrentUser = Depends(get_current_user),
 ) -> TokenResponse:
     """Issue a short-lived LiveKit access token.
 
-    NOTE: For production, verify that `current.id` is allowed in the given room
-    (call channel-service first). Skipped for MVP.
+    If the caller is muted in the channel, the token is issued with
+    can_publish=false (subscribe only). They can still hear others.
     """
     identity = payload.identity or str(current.id)
     room_name = f"room-{payload.room_id}"
+
+    muted = await _is_muted_in_channel(
+        str(payload.channel_id) if payload.channel_id else "",
+        request.headers.get("Authorization"),
+    )
 
     try:
         token = (
@@ -68,7 +101,7 @@ async def issue_token(
                 api.VideoGrants(
                     room_join=True,
                     room=room_name,
-                    can_publish=True,
+                    can_publish=not muted,
                     can_subscribe=True,
                 )
             )
@@ -77,4 +110,10 @@ async def issue_token(
     except Exception as e:
         raise HTTPException(500, f"Failed to mint token: {e}") from e
 
-    return TokenResponse(token=token, url=settings.LIVEKIT_URL, room=room_name, identity=identity)
+    return TokenResponse(
+        token=token,
+        url=settings.LIVEKIT_URL,
+        room=room_name,
+        identity=identity,
+        can_publish=not muted,
+    )

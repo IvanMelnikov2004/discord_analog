@@ -1,7 +1,13 @@
 """Tests for shared.permissions — Discord-style bitmask permissions."""
 import pytest
 
-from shared.permissions import Permission, has_permission
+from shared.permissions import (
+    OWNER_RANK,
+    Permission,
+    can_act_on,
+    can_manage_role,
+    has_permission,
+)
 
 
 def test_default_member_has_basic_perms(capsys):
@@ -54,3 +60,42 @@ def test_zero_permissions_grants_nothing():
         if p == Permission.NONE:
             continue
         assert not has_permission(0, p)
+
+
+# ---------- Role hierarchy ----------
+
+def test_higher_rank_can_act_on_lower():
+    print("\n[test] higher rank acts on lower rank")
+    assert can_act_on(actor_rank=5, target_rank=3)
+
+
+def test_lower_rank_cannot_act_on_higher():
+    print("\n[test] lower rank CANNOT act on higher rank")
+    assert not can_act_on(actor_rank=3, target_rank=5)
+
+
+def test_equal_rank_cannot_act():
+    print("\n[test] equal rank cannot act (no peer moderation)")
+    assert not can_act_on(actor_rank=4, target_rank=4)
+
+
+def test_owner_acts_on_anyone():
+    print("\n[test] owner outranks everyone")
+    assert can_act_on(actor_rank=0, target_rank=999, actor_is_owner=True)
+
+
+def test_nobody_acts_on_owner():
+    print("\n[test] owner is untouchable")
+    assert not can_act_on(actor_rank=999, target_rank=0, target_is_owner=True)
+
+
+def test_cannot_assign_role_at_or_above_own_rank():
+    print("\n[test] anti-escalation: cannot manage role >= own rank")
+    assert can_manage_role(actor_rank=5, role_position=3)
+    assert not can_manage_role(actor_rank=5, role_position=5)
+    assert not can_manage_role(actor_rank=3, role_position=5)
+
+
+def test_owner_manages_any_role():
+    print("\n[test] owner can manage any role")
+    assert can_manage_role(actor_rank=0, role_position=OWNER_RANK, actor_is_owner=True)

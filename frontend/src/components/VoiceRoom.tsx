@@ -11,6 +11,7 @@ import { api } from "../api";
 
 interface Props {
   roomId: string;
+  channelId: string;
 }
 
 interface Participant {
@@ -18,17 +19,26 @@ interface Participant {
   speaking: boolean;
 }
 
-export default function VoiceRoom({ roomId }: Props) {
+export default function VoiceRoom({ roomId, channelId }: Props) {
   const [room, setRoom] = useState<Room | null>(null);
   const [connected, setConnected] = useState(false);
   const [muted, setMuted] = useState(false);
+  const [canPublish, setCanPublish] = useState(true);
   const [participants, setParticipants] = useState<Participant[]>([]);
   const [error, setError] = useState("");
 
   async function join() {
     setError("");
     try {
-      const { data } = await api.post("/media/token", { room_id: roomId });
+      // channel_id lets the server check our mute status and decide whether to
+      // issue a publish-capable token.
+      const { data } = await api.post("/media/token", {
+        room_id: roomId,
+        channel_id: channelId,
+      });
+      const allowedToPublish = data.can_publish !== false;
+      setCanPublish(allowedToPublish);
+
       const r = new Room({ adaptiveStream: true, dynacast: true });
 
       r.on(RoomEvent.TrackSubscribed, (track: RemoteTrack, _pub: RemoteTrackPublication, p: RemoteParticipant) => {
@@ -48,7 +58,13 @@ export default function VoiceRoom({ roomId }: Props) {
       r.on(RoomEvent.ActiveSpeakersChanged, () => updateParticipants(r));
 
       await r.connect(data.url, data.token);
-      await r.localParticipant.setMicrophoneEnabled(true);
+      // If muted, the token has can_publish=false — skip mic init to avoid an
+      // error from LiveKit when the user has no publish grant.
+      if (allowedToPublish) {
+        await r.localParticipant.setMicrophoneEnabled(true);
+      } else {
+        setMuted(true);
+      }
 
       setRoom(r);
       setConnected(true);
@@ -102,6 +118,11 @@ export default function VoiceRoom({ roomId }: Props) {
         </button>
       ) : (
         <>
+          {!canPublish && (
+            <div className="text-xs text-amber-400 bg-amber-400/10 rounded px-2 py-1">
+              🔇 Вы замьючены модератором — слышите других, но микрофон отключён
+            </div>
+          )}
           <div className="space-y-1">
             {participants.map((p) => (
               <div
@@ -113,7 +134,12 @@ export default function VoiceRoom({ roomId }: Props) {
             ))}
           </div>
           <div className="flex gap-2">
-            <button onClick={toggleMute} className="bg-panel2 px-3 py-1 rounded text-sm">
+            <button
+              onClick={toggleMute}
+              disabled={!canPublish}
+              className="bg-panel2 px-3 py-1 rounded text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+              title={!canPublish ? "Микрофон запрещён модератором" : ""}
+            >
               {muted ? "Unmute" : "Mute"}
             </button>
             <button onClick={leave} className="bg-red-600 px-3 py-1 rounded text-sm">

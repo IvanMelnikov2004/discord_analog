@@ -81,6 +81,25 @@ class MemberRoleAssign(BaseModel):
     role_id: UUID
 
 
+class MyPermissionsResponse(BaseModel):
+    """Effective permissions of the current user in a channel.
+
+    `permissions` is the raw bitmask; `is_owner`/`is_admin` are convenience
+    flags; `names` lists the granted permission names so the frontend can
+    decide which controls to show without re-deriving the bitmask.
+    """
+    channel_id: UUID
+    permissions: int
+    rank: int
+    is_owner: bool
+    is_admin: bool
+    names: list[str]
+    # Mute status of the calling user in this channel — used by message-service
+    # to deny chat messages and by the frontend to disable input/voice publish.
+    muted: bool = False
+    muted_until: datetime | None = None
+
+
 # ---------- Invites ----------
 
 class InviteCreate(BaseModel):

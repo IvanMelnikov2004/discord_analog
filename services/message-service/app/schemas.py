@@ -13,6 +13,9 @@ class MessageCreate(BaseModel):
     """
     room_id: UUID | None = None
     recipient_id: UUID | None = None
+    # Channel that owns the room (required when room_id is set, so the server
+    # can verify mute status / permissions in channel-service). Ignored for DM.
+    channel_id: UUID | None = None
     # Base64 ciphertext (AES-GCM output: nonce + ciphertext + tag)
     ciphertext: str = Field(min_length=1, max_length=65536)
     # Key id of the sender key used (Sender Keys scheme)
@@ -42,3 +45,38 @@ def make_dm_pair(a: UUID, b: UUID) -> str:
 
 def new_message_id() -> UUID:
     return uuid4()
+
+
+# ---------- Sender key envelopes (E2EE key distribution) ----------
+
+class SenderKeyEnvelope(BaseModel):
+    """One sender's AES key, encrypted for one recipient via pairwise ECDH.
+
+    The server never sees the plaintext sender key — only this ciphertext.
+    `sender_pub` is the sender's ECDH public key (SPKI base64) so the
+    recipient can derive the same shared secret on their side. `key_id`
+    identifies which version of the sender key this is (lets clients detect
+    rotation, though MVP doesn't rotate).
+    """
+    room_id: UUID
+    recipient_id: UUID
+    key_id: str = Field(min_length=1, max_length=128)
+    # base64(AES-GCM(ECDH_shared_secret, sender_key)) — nonce + ct + tag
+    encrypted_key: str = Field(min_length=1, max_length=8192)
+    # Sender's ECDH public key as base64 SPKI
+    sender_pub: str = Field(min_length=1, max_length=2048)
+
+
+class SenderKeyEnvelopeBatch(BaseModel):
+    """Distribute one sender key to several recipients in a single call."""
+    envelopes: list[SenderKeyEnvelope] = Field(min_length=1, max_length=200)
+
+
+class SenderKeyEnvelopeResponse(BaseModel):
+    """An envelope addressed to the current user, ready to unwrap."""
+    room_id: UUID
+    sender_id: UUID
+    key_id: str
+    encrypted_key: str
+    sender_pub: str
+    created_at: datetime

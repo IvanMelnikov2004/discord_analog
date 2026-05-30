@@ -2,14 +2,56 @@ import json
 from datetime import datetime, timezone
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+import httpx
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
-from app.db import messages_collection, redis_pub
+from app.config import get_settings
+from app.db import messages_collection, redis_pub, sender_keys_collection
 from app.deps import get_current_user
-from app.schemas import MessageCreate, MessageResponse, make_dm_pair, new_message_id
+from app.schemas import (
+    MessageCreate,
+    MessageResponse,
+    SenderKeyEnvelopeBatch,
+    SenderKeyEnvelopeResponse,
+    make_dm_pair,
+    new_message_id,
+)
 from shared.deps import CurrentUser
 
 router = APIRouter(prefix="/api/messages", tags=["messages"])
+settings = get_settings()
+
+
+async def _fetch_channel_status(
+    channel_id: str, auth_header: str | None
+) -> dict | None:
+    """Fetch the caller's status in a channel from channel-service.
+
+    Returns the full /me/permissions response (dict with is_admin, is_owner,
+    names, muted, ...) or None if anything fails. Fail-closed.
+    """
+    if not channel_id or not auth_header:
+        return None
+    url = f"{settings.CHANNEL_SERVICE_URL}/api/channels/{channel_id}/me/permissions"
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            resp = await client.get(url, headers={"Authorization": auth_header})
+        if resp.status_code != 200:
+            return None
+        return resp.json()
+    except Exception:
+        return None
+
+
+async def _can_manage_messages(channel_id: str, auth_header: str | None) -> bool:
+    """Whether the caller has MANAGE_MESSAGES in the channel. Fail-closed."""
+    data = await _fetch_channel_status(channel_id, auth_header)
+    if data is None:
+        return False
+    return bool(data.get("is_admin") or data.get("is_owner")) or (
+        "MANAGE_MESSAGES" in data.get("names", [])
+    )
+
 
 
 def _to_response(doc: dict) -> MessageResponse:
@@ -29,10 +71,32 @@ def _to_response(doc: dict) -> MessageResponse:
 @router.post("", response_model=MessageResponse, status_code=201)
 async def send_message(
     payload: MessageCreate,
+    request: Request,
     current: CurrentUser = Depends(get_current_user),
 ) -> MessageResponse:
     if (payload.room_id is None) == (payload.recipient_id is None):
         raise HTTPException(400, "Provide exactly one of room_id or recipient_id")
+
+    # For room messages, verify the sender is not muted in the channel.
+    # SEND_MESSAGES permission is also checked (so revoking that role-flag
+    # silences a user too). DMs have no channel context.
+    if payload.room_id is not None:
+        status = await _fetch_channel_status(
+            str(payload.channel_id) if payload.channel_id else "",
+            request.headers.get("Authorization"),
+        )
+        if status is None:
+            # No channel context => can't verify status — reject (fail-closed).
+            raise HTTPException(403, "Cannot verify channel membership")
+        if status.get("muted"):
+            raise HTTPException(403, "Вы замьючены в этом канале")
+        # Admin/owner bypass the SEND_MESSAGES bitmask.
+        if not (
+            status.get("is_admin")
+            or status.get("is_owner")
+            or "SEND_MESSAGES" in status.get("names", [])
+        ):
+            raise HTTPException(403, "Missing permission: SEND_MESSAGES")
 
     msg_id = new_message_id()
     doc = {
@@ -105,13 +169,27 @@ async def list_dm_messages(
 @router.delete("/{message_id}", status_code=204)
 async def delete_message(
     message_id: UUID,
+    request: Request,
+    channel_id: str | None = Query(None),
     current: CurrentUser = Depends(get_current_user),
 ) -> None:
     doc = await messages_collection.find_one({"id": str(message_id)})
     if not doc:
         raise HTTPException(404, "Not found")
-    if doc["sender_id"] != str(current.id):
-        raise HTTPException(403, "You can only delete your own messages")
+
+    is_own = doc["sender_id"] == str(current.id)
+    if not is_own:
+        # Deleting someone else's message requires MANAGE_MESSAGES in the
+        # channel. We ask channel-service (the source of truth for roles).
+        # Only meaningful for room messages; DMs have no moderators.
+        if not doc.get("room_id"):
+            raise HTTPException(403, "You can only delete your own messages")
+        allowed = await _can_manage_messages(
+            channel_id or "", request.headers.get("Authorization")
+        )
+        if not allowed:
+            raise HTTPException(403, "Missing permission: MANAGE_MESSAGES")
+
     await messages_collection.delete_one({"id": str(message_id)})
 
     channel = (
@@ -121,3 +199,80 @@ async def delete_message(
         channel,
         json.dumps({"type": "message.deleted", "data": {"id": str(message_id)}}),
     )
+
+
+# ---------- Sender key distribution (E2EE) ----------
+
+@router.post("/sender-keys", status_code=201)
+async def distribute_sender_keys(
+    batch: SenderKeyEnvelopeBatch,
+    current: CurrentUser = Depends(get_current_user),
+) -> dict:
+    """Upload encrypted sender-key envelopes for other room members.
+
+    The caller has just generated (or rotated) their AES sender key for a
+    room and wraps it for each recipient via pairwise ECDH on the client.
+    The server stores the resulting ciphertext only — it cannot read it.
+    """
+    now = datetime.now(timezone.utc)
+    for env in batch.envelopes:
+        doc = {
+            "room_id": str(env.room_id),
+            "sender_id": str(current.id),
+            "recipient_id": str(env.recipient_id),
+            "key_id": env.key_id,
+            "encrypted_key": env.encrypted_key,
+            "sender_pub": env.sender_pub,
+            "created_at": now,
+        }
+        # Upsert so re-distribution (same sender→recipient pair) overwrites.
+        await sender_keys_collection.update_one(
+            {
+                "room_id": str(env.room_id),
+                "sender_id": str(current.id),
+                "recipient_id": str(env.recipient_id),
+            },
+            {"$set": doc},
+            upsert=True,
+        )
+
+        # Notify the recipient over their personal user channel so any open
+        # client can fetch and unwrap the new key without polling.
+        await redis_pub.publish(
+            f"user:{env.recipient_id}",
+            json.dumps(
+                {
+                    "type": "senderkey.new",
+                    "data": {
+                        "room_id": str(env.room_id),
+                        "sender_id": str(current.id),
+                        "key_id": env.key_id,
+                    },
+                }
+            ),
+        )
+
+    return {"distributed": len(batch.envelopes)}
+
+
+@router.get("/sender-keys/{room_id}", response_model=list[SenderKeyEnvelopeResponse])
+async def get_my_sender_keys(
+    room_id: UUID,
+    current: CurrentUser = Depends(get_current_user),
+) -> list[SenderKeyEnvelopeResponse]:
+    """Fetch all sender-key envelopes addressed to me in this room."""
+    cursor = sender_keys_collection.find(
+        {"room_id": str(room_id), "recipient_id": str(current.id)}
+    )
+    docs = await cursor.to_list(length=500)
+    return [
+        SenderKeyEnvelopeResponse(
+            room_id=UUID(d["room_id"]),
+            sender_id=UUID(d["sender_id"]),
+            key_id=d["key_id"],
+            encrypted_key=d["encrypted_key"],
+            sender_pub=d["sender_pub"],
+            created_at=d["created_at"],
+        )
+        for d in docs
+    ]

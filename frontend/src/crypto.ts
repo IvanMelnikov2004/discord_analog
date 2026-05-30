@@ -119,43 +119,156 @@ export async function importEcdhPublicKey(b64: string): Promise<CryptoKey> {
   );
 }
 
-// ---------- AES-256-GCM (sender keys) ----------
+// ---------- AES-256-GCM Sender Keys (E2EE group chat) ----------
+//
+// Model (Signal-style "sender keys"):
+//   - Each user has ONE AES-256 sender key per room they participate in.
+//   - They encrypt every outgoing message with their own sender key.
+//   - They distribute that sender key to every other room member, wrapping
+//     it with a pairwise ECDH shared secret (so only the recipient can
+//     unwrap it). The server only ever sees ciphertext envelopes.
+//   - The keystore key in IndexedDB is "sender-key:<room>:<userId>".
+//     The user's OWN key is stored under their own userId; received keys
+//     are stored under their respective sender's userId.
+//   - To decrypt, the client looks up the key by the message's sender_id.
 
 export async function generateSenderKey(): Promise<CryptoKey> {
   assertCryptoAvailable();
-  return crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, true, ["encrypt", "decrypt"]);
+  // `extractable=true` because we need to export the raw bytes when wrapping
+  // for recipients. Private ECDH keys remain non-extractable; only the
+  // symmetric room key is exportable, and only the wrapped form ever leaves
+  // this device.
+  return crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, true, [
+    "encrypt",
+    "decrypt",
+  ]);
 }
 
-export async function saveSenderKey(roomId: string, key: CryptoKey): Promise<void> {
-  await idbPut(`sender-key:${roomId}`, key);
+function senderKeyId(roomId: string, userId: string): string {
+  return `sender-key:${roomId}:${userId}`;
 }
 
-export async function loadSenderKey(roomId: string): Promise<CryptoKey | undefined> {
-  return idbGet<CryptoKey>(`sender-key:${roomId}`);
+export async function saveSenderKeyFor(
+  roomId: string,
+  userId: string,
+  key: CryptoKey
+): Promise<void> {
+  await idbPut(senderKeyId(roomId, userId), key);
 }
 
-export async function encryptForRoom(roomId: string, plaintext: string): Promise<string> {
-  const key = await loadSenderKey(roomId);
-  if (!key) throw new Error("No sender key for this room");
+export async function loadSenderKeyFor(
+  roomId: string,
+  userId: string
+): Promise<CryptoKey | undefined> {
+  return idbGet<CryptoKey>(senderKeyId(roomId, userId));
+}
+
+/** Ensure the current user has their OWN sender key for the room. */
+export async function ensureMySenderKey(
+  roomId: string,
+  myId: string
+): Promise<CryptoKey> {
+  let key = await loadSenderKeyFor(roomId, myId);
+  if (!key) {
+    key = await generateSenderKey();
+    await saveSenderKeyFor(roomId, myId, key);
+  }
+  return key;
+}
+
+/** Encrypt a plaintext message with MY sender key. */
+export async function encryptWithMyKey(
+  roomId: string,
+  myId: string,
+  plaintext: string
+): Promise<string> {
+  const key = await ensureMySenderKey(roomId, myId);
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const ct = await crypto.subtle.encrypt(
     { name: "AES-GCM", iv },
     key,
     new TextEncoder().encode(plaintext)
   );
-  // Concatenate iv (12) + ciphertext, base64 it.
   const combined = new Uint8Array(iv.byteLength + ct.byteLength);
   combined.set(iv, 0);
   combined.set(new Uint8Array(ct), iv.byteLength);
   return bufToB64(combined.buffer);
 }
 
-export async function decryptForRoom(roomId: string, b64: string): Promise<string> {
-  const key = await loadSenderKey(roomId);
-  if (!key) throw new Error("No sender key for this room");
+/** Decrypt a message using the SENDER's key (looked up by senderId). */
+export async function decryptFromSender(
+  roomId: string,
+  senderId: string,
+  b64: string
+): Promise<string> {
+  const key = await loadSenderKeyFor(roomId, senderId);
+  if (!key) throw new Error("No sender key for this sender yet");
   const combined = new Uint8Array(b64ToBuf(b64));
   const iv = combined.slice(0, 12);
   const ct = combined.slice(12);
   const pt = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct);
   return new TextDecoder().decode(pt);
 }
+
+// ---------- ECDH key wrapping ----------
+
+/** Derive a 256-bit AES-GCM key from my private + their public ECDH. */
+async function deriveSharedKey(
+  myPrivate: CryptoKey,
+  theirPublic: CryptoKey
+): Promise<CryptoKey> {
+  return crypto.subtle.deriveKey(
+    { name: "ECDH", public: theirPublic },
+    myPrivate,
+    { name: "AES-GCM", length: 256 },
+    false,
+    ["encrypt", "decrypt"]
+  );
+}
+
+/**
+ * Wrap (encrypt) my sender key for one recipient. The recipient's ECDH
+ * public key (b64 SPKI) is fetched from the server and used to derive the
+ * shared secret. Returns base64(nonce + ciphertext).
+ */
+export async function wrapSenderKeyForRecipient(
+  myPrivate: CryptoKey,
+  recipientPubB64: string,
+  senderKey: CryptoKey
+): Promise<string> {
+  const recipientPub = await importEcdhPublicKey(recipientPubB64);
+  const shared = await deriveSharedKey(myPrivate, recipientPub);
+  const raw = await crypto.subtle.exportKey("raw", senderKey);
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, shared, raw);
+  const combined = new Uint8Array(iv.byteLength + ct.byteLength);
+  combined.set(iv, 0);
+  combined.set(new Uint8Array(ct), iv.byteLength);
+  return bufToB64(combined.buffer);
+}
+
+/**
+ * Unwrap (decrypt) a sender-key envelope addressed to me. Imports the
+ * decrypted raw bytes into an AES-GCM CryptoKey so the rest of the app can
+ * use it.
+ */
+export async function unwrapSenderKey(
+  myPrivate: CryptoKey,
+  senderPubB64: string,
+  encryptedKeyB64: string
+): Promise<CryptoKey> {
+  const senderPub = await importEcdhPublicKey(senderPubB64);
+  const shared = await deriveSharedKey(myPrivate, senderPub);
+  const combined = new Uint8Array(b64ToBuf(encryptedKeyB64));
+  const iv = combined.slice(0, 12);
+  const ct = combined.slice(12);
+  const raw = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, shared, ct);
+  return crypto.subtle.importKey(
+    "raw",
+    raw,
+    { name: "AES-GCM", length: 256 },
+    true,
+    ["encrypt", "decrypt"]
+  );
+}
+

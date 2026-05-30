@@ -4,6 +4,11 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api";
 import ChatRoom from "../components/ChatRoom";
 import VoiceRoom from "../components/VoiceRoom";
+import RoleManager from "../components/RoleManager";
+import MemberActions from "../components/MemberActions";
+import BanList from "../components/BanList";
+import { useMemberRoles } from "../hooks/useMemberRoles";
+import { useMyPermissions } from "../hooks/useMyPermissions";
 
 interface Channel {
   id: string;
@@ -34,6 +39,10 @@ export default function ChannelPage() {
   const [inviteCode, setInviteCode] = useState<string | null>(null);
   const [newRoomName, setNewRoomName] = useState("");
   const [newRoomType, setNewRoomType] = useState<"text" | "voice">("text");
+  const [showRoles, setShowRoles] = useState(false);
+  const [showBans, setShowBans] = useState(false);
+
+  const { perms: myPerms, can } = useMyPermissions(channelId);
 
   const { data: channel } = useQuery({
     queryKey: ["channel", channelId],
@@ -52,6 +61,8 @@ export default function ChannelPage() {
     queryFn: async () => (await api.get<Member[]>(`/channels/${channelId}/members`)).data,
     enabled: !!channelId,
   });
+
+  const { data: roleInfo = {} } = useMemberRoles(channelId);
 
   // Auto-select first text room if none chosen
   useEffect(() => {
@@ -81,6 +92,20 @@ export default function ChannelPage() {
     qc.invalidateQueries({ queryKey: ["rooms", channelId] });
   }
 
+  async function deleteRoom(roomIdToDelete: string) {
+    if (!confirm("Удалить эту комнату? Действие необратимо.")) return;
+    await api.delete(`/channels/${channelId}/rooms/${roomIdToDelete}`);
+    qc.invalidateQueries({ queryKey: ["rooms", channelId] });
+    // If we deleted the room we're viewing, go back to the channel root.
+    if (roomIdToDelete === roomId) navigate(`/channels/${channelId}`);
+  }
+
+  async function deleteChannel() {
+    if (!confirm("Удалить весь канал со всеми комнатами и сообщениями? Необратимо.")) return;
+    await api.delete(`/channels/${channelId}`);
+    navigate("/");
+  }
+
   return (
     <div className="h-screen flex">
       {/* Sidebar */}
@@ -97,37 +122,58 @@ export default function ChannelPage() {
           {rooms
             .filter((r) => r.room_type === "text")
             .map((r) => (
-              <Link
-                key={r.id}
-                to={`/channels/${channelId}/rooms/${r.id}`}
-                className={`block px-2 py-1 rounded text-sm hover:bg-panel2 ${
-                  r.id === roomId ? "bg-panel2" : ""
-                }`}
-              >
-                # {r.name}
-              </Link>
+              <div key={r.id} className="flex items-center group">
+                <Link
+                  to={`/channels/${channelId}/rooms/${r.id}`}
+                  className={`flex-1 px-2 py-1 rounded text-sm hover:bg-panel2 truncate ${
+                    r.id === roomId ? "bg-panel2" : ""
+                  }`}
+                >
+                  # {r.name}
+                </Link>
+                {can("MANAGE_CHANNELS") && (
+                  <button
+                    onClick={() => deleteRoom(r.id)}
+                    className="opacity-0 group-hover:opacity-100 text-muted hover:text-red-400 px-1"
+                    title="Удалить комнату"
+                  >
+                    ✕
+                  </button>
+                )}
+              </div>
             ))}
 
           <div className="text-xs uppercase text-muted px-2 py-1 mt-3">Voice rooms</div>
           {rooms
             .filter((r) => r.room_type === "voice")
             .map((r) => (
-              <Link
-                key={r.id}
-                to={`/channels/${channelId}/rooms/${r.id}`}
-                className={`block px-2 py-1 rounded text-sm hover:bg-panel2 ${
-                  r.id === roomId ? "bg-panel2" : ""
-                }`}
-              >
-                🔊 {r.name}
-              </Link>
+              <div key={r.id} className="flex items-center group">
+                <Link
+                  to={`/channels/${channelId}/rooms/${r.id}`}
+                  className={`flex-1 px-2 py-1 rounded text-sm hover:bg-panel2 truncate ${
+                    r.id === roomId ? "bg-panel2" : ""
+                  }`}
+                >
+                  🔊 {r.name}
+                </Link>
+                {can("MANAGE_CHANNELS") && (
+                  <button
+                    onClick={() => deleteRoom(r.id)}
+                    className="opacity-0 group-hover:opacity-100 text-muted hover:text-red-400 px-1"
+                    title="Удалить комнату"
+                  >
+                    ✕
+                  </button>
+                )}
+              </div>
             ))}
 
-          <div className="mt-4 p-2 bg-bg rounded space-y-2">
-            <input
-              value={newRoomName}
-              onChange={(e) => setNewRoomName(e.target.value)}
-              placeholder="New room name"
+          {can("MANAGE_CHANNELS") && (
+            <div className="mt-4 p-2 bg-bg rounded space-y-2">
+              <input
+                value={newRoomName}
+                onChange={(e) => setNewRoomName(e.target.value)}
+                placeholder="New room name"
               className="w-full bg-panel p-1 text-sm rounded"
             />
             <select
@@ -141,24 +187,58 @@ export default function ChannelPage() {
             <button onClick={createRoom} className="w-full bg-accent text-sm py-1 rounded">
               + Create room
             </button>
-          </div>
-        </div>
-
-        <div className="p-2 border-t border-panel2">
-          <button
-            onClick={createInvite}
-            className="w-full bg-panel2 text-sm py-1 rounded"
-          >
-            Create invite
-          </button>
-          {showInvite && inviteCode && (
-            <div className="mt-2 p-2 bg-bg rounded text-xs">
-              <div className="text-muted">Code (valid 24h):</div>
-              <div className="font-mono break-all">{inviteCode}</div>
             </div>
           )}
         </div>
+
+        <div className="p-2 border-t border-panel2 space-y-1">
+          {can("MANAGE_ROLES") && (
+            <button
+              onClick={() => setShowRoles(true)}
+              className="w-full bg-panel2 text-sm py-1 rounded"
+            >
+              Управление ролями
+            </button>
+          )}
+          {can("BAN_MEMBERS") && (
+            <button
+              onClick={() => setShowBans(true)}
+              className="w-full bg-panel2 text-sm py-1 rounded"
+            >
+              Список банов
+            </button>
+          )}
+          {can("CREATE_INVITE") && (
+            <button
+              onClick={createInvite}
+              className="w-full bg-panel2 text-sm py-1 rounded"
+            >
+              Создать приглашение
+            </button>
+          )}
+          {showInvite && inviteCode && (
+            <div className="mt-2 p-2 bg-bg rounded text-xs">
+              <div className="text-muted">Код (действует 24ч):</div>
+              <div className="font-mono break-all">{inviteCode}</div>
+            </div>
+          )}
+          {myPerms?.is_owner && (
+            <button
+              onClick={deleteChannel}
+              className="w-full bg-red-600/80 hover:bg-red-600 text-sm py-1 rounded mt-2"
+            >
+              Удалить канал
+            </button>
+          )}
+        </div>
       </aside>
+
+      {showRoles && (
+        <RoleManager channelId={channelId!} onClose={() => setShowRoles(false)} />
+      )}
+      {showBans && (
+        <BanList channelId={channelId!} onClose={() => setShowBans(false)} />
+      )}
 
       {/* Main */}
       <main className="flex-1 flex flex-col">
@@ -169,10 +249,12 @@ export default function ChannelPage() {
         </header>
 
         <div className="flex-1 overflow-hidden">
-          {currentRoom?.room_type === "text" && <ChatRoom roomId={currentRoom.id} />}
+          {currentRoom?.room_type === "text" && (
+            <ChatRoom roomId={currentRoom.id} channelId={channelId!} />
+          )}
           {currentRoom?.room_type === "voice" && (
             <div className="p-4">
-              <VoiceRoom roomId={currentRoom.id} />
+              <VoiceRoom roomId={currentRoom.id} channelId={channelId!} />
             </div>
           )}
         </div>
@@ -181,12 +263,46 @@ export default function ChannelPage() {
       {/* Members panel */}
       <aside className="w-56 bg-panel border-l border-panel2 p-4 overflow-y-auto">
         <div className="text-xs uppercase text-muted mb-2">Members ({members.length})</div>
-        {members.map((m) => (
-          <div key={m.id} className="text-sm py-1">
-            {m.nickname || m.user_id.slice(0, 8)}
-            {m.muted && <span className="text-muted text-xs ml-1">(muted)</span>}
-          </div>
-        ))}
+        {members.map((m) => {
+          const role = roleInfo[m.user_id]?.topRole;
+          // Hierarchy: I can act on a member only if my rank strictly exceeds
+          // theirs (owner outranks all; nobody outranks the owner).
+          const targetRank = role?.position ?? 0;
+          const targetIsOwner = m.user_id === channel?.owner_id;
+          const myRank = myPerms?.is_owner ? Number.MAX_SAFE_INTEGER : myPerms?.rank ?? 0;
+          const actionable =
+            !targetIsOwner && (myPerms?.is_owner || myRank > targetRank);
+
+          return (
+            <div key={m.id} className="text-sm py-1 flex items-center gap-1.5 group">
+              <span style={role?.color ? { color: role.color } : undefined} className="truncate">
+                {m.nickname || m.user_id.slice(0, 8)}
+              </span>
+              {role && (
+                <span
+                  className="px-1 rounded text-[10px] shrink-0"
+                  style={{
+                    backgroundColor: (role.color || "#979c9f") + "33",
+                    color: role.color || "#979c9f",
+                  }}
+                >
+                  {role.name}
+                </span>
+              )}
+              {m.muted && <span className="text-muted text-xs shrink-0">🔇</span>}
+              <span className="ml-auto">
+                <MemberActions
+                  channelId={channelId!}
+                  member={m}
+                  canKick={can("KICK_MEMBERS")}
+                  canBan={can("BAN_MEMBERS")}
+                  canMute={can("MUTE_MEMBERS")}
+                  actionable={!!actionable}
+                />
+              </span>
+            </div>
+          );
+        })}
       </aside>
     </div>
   );

@@ -94,8 +94,6 @@ services:
       # so the browser can reach it from a secure context.
       - "traefik.enable=true"
       - "traefik.http.routers.livekit.rule=PathPrefix(`/rtc`)"
-      - "traefik.http.routers.livekit.entrypoints=websecure"
-      - "traefik.http.routers.livekit.tls=true"
       - "traefik.http.services.livekit.loadbalancer.server.port=7880"
 
   # ---------- Backend services ----------
@@ -114,8 +112,6 @@ services:
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.auth.rule=PathPrefix(`/api/auth`)"
-      - "traefik.http.routers.auth.entrypoints=websecure"
-      - "traefik.http.routers.auth.tls=true"
       - "traefik.http.services.auth.loadbalancer.server.port=8000"
 
   user-service:
@@ -133,8 +129,6 @@ services:
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.users.rule=PathPrefix(`/api/users`)"
-      - "traefik.http.routers.users.entrypoints=websecure"
-      - "traefik.http.routers.users.tls=true"
       - "traefik.http.services.users.loadbalancer.server.port=8000"
 
   channel-service:
@@ -153,8 +147,6 @@ services:
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.channels.rule=PathPrefix(`/api/channels`) || PathPrefix(`/api/invites`)"
-      - "traefik.http.routers.channels.entrypoints=websecure"
-      - "traefik.http.routers.channels.tls=true"
       - "traefik.http.services.channels.loadbalancer.server.port=8000"
 
   message-service:
@@ -165,6 +157,7 @@ services:
     environment:
       <<: *service-env
       SERVICE_NAME: message-service
+      CHANNEL_SERVICE_URL: http://channel-service:8000
     depends_on:
       mongo: { condition: service_healthy }
       redis: { condition: service_healthy }
@@ -172,8 +165,6 @@ services:
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.messages.rule=PathPrefix(`/api/messages`)"
-      - "traefik.http.routers.messages.entrypoints=websecure"
-      - "traefik.http.routers.messages.tls=true"
       - "traefik.http.services.messages.loadbalancer.server.port=8000"
 
   gateway-service:
@@ -191,8 +182,6 @@ services:
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.ws.rule=PathPrefix(`/ws`)"
-      - "traefik.http.routers.ws.entrypoints=websecure"
-      - "traefik.http.routers.ws.tls=true"
       - "traefik.http.services.ws.loadbalancer.server.port=8000"
 
   media-service:
@@ -206,12 +195,11 @@ services:
       LIVEKIT_API_KEY: ${LIVEKIT_API_KEY}
       LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET}
       LIVEKIT_URL: ${LIVEKIT_URL}
+      CHANNEL_SERVICE_URL: http://channel-service:8000
     networks: [backend]
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.media.rule=PathPrefix(`/api/media`)"
-      - "traefik.http.routers.media.entrypoints=websecure"
-      - "traefik.http.routers.media.tls=true"
       - "traefik.http.services.media.loadbalancer.server.port=8000"
 
   # ---------- Frontend ----------
@@ -228,8 +216,6 @@ services:
       - "traefik.enable=true"
       - "traefik.http.routers.frontend.rule=PathPrefix(`/`)"
       - "traefik.http.routers.frontend.priority=1"
-      - "traefik.http.routers.frontend.entrypoints=websecure"
-      - "traefik.http.routers.frontend.tls=true"
       - "traefik.http.services.frontend.loadbalancer.server.port=80"
 
   # ---------- Docker socket proxy ----------
@@ -251,30 +237,24 @@ services:
     networks: [backend]
 
   # ---------- API gateway ----------
+  # Base config is plain HTTP — suitable for local development on localhost
+  # (which browsers treat as a secure context, so Web Crypto / getUserMedia
+  # work without certificates). HTTPS / Let's Encrypt is added by
+  # docker-compose.prod.yml for server deployments.
   traefik:
-    image: traefik:v3.0
+    image: traefik:v3.7.1
     restart: unless-stopped
     depends_on:
       - dockerproxy
     command:
       - "--providers.docker=true"
       - "--providers.docker.exposedbydefault=false"
-      # Talk to Docker through the proxy instead of the raw socket.
       - "--providers.docker.endpoint=tcp://dockerproxy:2375"
-      - "--providers.file.filename=/etc/traefik/dynamic.yml"
       - "--entrypoints.web.address=:80"
-      - "--entrypoints.websecure.address=:443"
-      # Redirect all plain HTTP to HTTPS so Web Crypto / getUserMedia work.
-      - "--entrypoints.web.http.redirections.entrypoint.to=websecure"
-      - "--entrypoints.web.http.redirections.entrypoint.scheme=https"
       - "--api.insecure=true"
     ports:
       - "80:80"
-      - "443:443"
       - "8080:8080"
-    volumes:
-      - ./infrastructure/traefik/dynamic.yml:/etc/traefik/dynamic.yml:ro
-      - ./infrastructure/traefik/certs:/certs:ro
     networks: [backend]
 
 volumes:
