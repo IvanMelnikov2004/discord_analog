@@ -31,6 +31,11 @@ services:
       - "--certificatesresolvers.le.acme.httpchallenge=true"
       - "--certificatesresolvers.le.acme.httpchallenge.entrypoint=web"
       - "--api.insecure=true"
+    # Re-publish port 443 here: the base compose only opens :80 (HTTP-only is
+    # right for local dev), but production needs HTTPS too. Compose merges the
+    # ports list with the base, so :80 from base is preserved.
+    ports:
+      - "443:443"
     volumes:
       # No raw docker.sock here — it goes through dockerproxy now.
       - acme_data:/acme
