@@ -5,6 +5,8 @@ import RegisterPage from "./pages/RegisterPage";
 import HomePage from "./pages/HomePage";
 import ChannelPage from "./pages/ChannelPage";
 import InvitePage from "./pages/InvitePage";
+import DmPage from "./pages/DmPage";
+import ProfilePage from "./pages/ProfilePage";
 import GlobalEventListener from "./components/GlobalEventListener";
 
 function RequireAuth({ children }: { children: JSX.Element }) {
@@ -29,6 +31,22 @@ export default function App() {
         element={
           <RequireAuth>
             <HomePage />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/profile/:userId"
+        element={
+          <RequireAuth>
+            <ProfilePage />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/dm/:peerId"
+        element={
+          <RequireAuth>
+            <DmPage />
           </RequireAuth>
         }
       />

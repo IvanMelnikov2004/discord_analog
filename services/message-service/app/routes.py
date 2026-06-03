@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from app.config import get_settings
 from app.db import messages_collection, redis_pub, sender_keys_collection
 from app.deps import get_current_user
+from app.ratelimit import enforce_message_limit
 from app.schemas import (
     MessageCreate,
     MessageResponse,
@@ -98,6 +99,22 @@ async def send_message(
         ):
             raise HTTPException(403, "Missing permission: SEND_MESSAGES")
 
+    # Rate-limit per (user, conversation). Scope distinguishes rooms from DMs
+    # so a chatty channel doesn't eat into your DM budget and vice versa.
+    scope = (
+        f"room:{payload.room_id}"
+        if payload.room_id is not None
+        else f"dm:{make_dm_pair(current.id, payload.recipient_id)}"
+    )
+    retry_after = await enforce_message_limit(str(current.id), scope)
+    if retry_after is not None:
+        seconds = max(1, int(retry_after + 0.5))
+        raise HTTPException(
+            status_code=429,
+            detail=f"Слишком много сообщений. Попробуйте через {seconds} с.",
+            headers={"Retry-After": str(seconds)},
+        )
+
     msg_id = new_message_id()
     doc = {
         "id": str(msg_id),
@@ -164,6 +181,41 @@ async def list_dm_messages(
     cursor = messages_collection.find(query).sort("created_at", -1).limit(limit)
     docs = await cursor.to_list(length=limit)
     return [_to_response(d) for d in reversed(docs)]
+
+
+@router.get("/dm-conversations")
+async def list_dm_conversations(
+    current: CurrentUser = Depends(get_current_user),
+) -> list[dict]:
+    """Return distinct DM partners with the timestamp of the last message.
+
+    Used by the frontend to render the "Direct Messages" sidebar list.
+    """
+    my_id = str(current.id)
+    pipeline = [
+        # Only DMs that I'm part of
+        {"$match": {"dm_pair": {"$regex": my_id}}},
+        # For each conversation keep the most recent message
+        {"$sort": {"created_at": -1}},
+        {
+            "$group": {
+                "_id": "$dm_pair",
+                "last_at": {"$first": "$created_at"},
+                "last_sender": {"$first": "$sender_id"},
+                "last_recipient": {"$first": "$recipient_id"},
+            }
+        },
+        {"$sort": {"last_at": -1}},
+        {"$limit": 50},
+    ]
+    docs = await messages_collection.aggregate(pipeline).to_list(length=50)
+    out = []
+    for d in docs:
+        # dm_pair = "<uuidA>:<uuidB>" sorted; the partner is the one that's not me.
+        a, b = d["_id"].split(":")
+        partner = b if a == my_id else a
+        out.append({"partner_id": partner, "last_at": d["last_at"]})
+    return out
 
 
 @router.delete("/{message_id}", status_code=204)

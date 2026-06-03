@@ -272,3 +272,80 @@ export async function unwrapSenderKey(
   );
 }
 
+
+// ---------- DM keys (E2EE direct messages) ----------
+//
+// DM model is the same Sender-Keys-but-for-two: I generate ONE AES key per
+// peer I talk to, encrypt my outgoing DMs with it, and wrap it for the peer
+// via pairwise ECDH. To decrypt, I look the key up by `senderId`:
+//   - my own key for messages I sent      -> key("dm", peerId, myId)
+//   - the peer's key for messages I got   -> key("dm", peerId, peerId)
+// `peerId` is the OTHER user's id in both cases — that uniquely names the
+// conversation regardless of direction.
+
+function dmKeyId(peerId: string, ownerId: string): string {
+  return `dm-key:${peerId}:${ownerId}`;
+}
+
+export async function saveDmKeyFor(
+  peerId: string,
+  ownerId: string,
+  key: CryptoKey
+): Promise<void> {
+  await idbPut(dmKeyId(peerId, ownerId), key);
+}
+
+export async function loadDmKeyFor(
+  peerId: string,
+  ownerId: string
+): Promise<CryptoKey | undefined> {
+  return idbGet<CryptoKey>(dmKeyId(peerId, ownerId));
+}
+
+/** Ensure I have my own AES key for the DM with this peer. */
+export async function ensureMyDmKey(
+  peerId: string,
+  myId: string
+): Promise<CryptoKey> {
+  let key = await loadDmKeyFor(peerId, myId);
+  if (!key) {
+    key = await generateSenderKey();
+    await saveDmKeyFor(peerId, myId, key);
+  }
+  return key;
+}
+
+/** Encrypt a DM plaintext with MY key for this peer. */
+export async function encryptDmWithMyKey(
+  peerId: string,
+  myId: string,
+  plaintext: string
+): Promise<string> {
+  const key = await ensureMyDmKey(peerId, myId);
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = await crypto.subtle.encrypt(
+    { name: "AES-GCM", iv },
+    key,
+    new TextEncoder().encode(plaintext)
+  );
+  const combined = new Uint8Array(iv.byteLength + ct.byteLength);
+  combined.set(iv, 0);
+  combined.set(new Uint8Array(ct), iv.byteLength);
+  return bufToB64(combined.buffer);
+}
+
+/** Decrypt a DM using the sender's key for this conversation. */
+export async function decryptDmFromSender(
+  peerId: string,
+  senderId: string,
+  b64: string
+): Promise<string> {
+  const key = await loadDmKeyFor(peerId, senderId);
+  if (!key) throw new Error("No DM key for this sender yet");
+  const combined = new Uint8Array(b64ToBuf(b64));
+  const iv = combined.slice(0, 12);
+  const ct = combined.slice(12);
+  const pt = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct);
+  return new TextDecoder().decode(pt);
+}
+

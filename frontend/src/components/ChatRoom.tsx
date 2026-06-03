@@ -1,11 +1,13 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { api } from "../api";
 import { decryptFromSender, encryptWithMyKey } from "../crypto";
 import { fetchAndStoreSenderKeys, setupRoomKeys } from "../senderKeys";
 import { useWebSocket } from "../hooks/useWebSocket";
 import { useMemberRoles } from "../hooks/useMemberRoles";
 import { useMyPermissions } from "../hooks/useMyPermissions";
+import { useMessagePagination } from "../hooks/useMessagePagination";
 import { useAuthStore } from "../store/auth";
+import { parseRateLimit } from "../rateLimit";
 
 interface Message {
   id: string;
@@ -25,10 +27,29 @@ export default function ChatRoom({ roomId, channelId }: Props) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [error, setError] = useState("");
-  const listRef = useRef<HTMLDivElement>(null);
+  const [rateLimitMsg, setRateLimitMsg] = useState("");
+  const [sendDisabledUntil, setSendDisabledUntil] = useState(0);
   const userId = useAuthStore((s) => s.userId)!;
   const { data: roleInfo = {} } = useMemberRoles(channelId);
   const { can, perms } = useMyPermissions(channelId);
+
+  // Pagination: container ref + onScroll handler that calls fetchOlder when
+  // the user nears the top. decryptBatch runs on each fetched page so old
+  // messages decrypt the same way new ones do.
+  const decryptBatch = async (batch: Message[]) =>
+    Promise.all(batch.map((m) => decryptMsg(m)));
+  const { containerRef, onScroll, loading: loadingOlder, hasMore } =
+    useMessagePagination<Message>({
+      messages,
+      setMessages,
+      fetchOlder: async (before) => {
+        const { data } = await api.get<Message[]>(`/messages/room/${roomId}`, {
+          params: { before, limit: 50 },
+        });
+        return data;
+      },
+      decryptBatch,
+    });
 
   async function deleteMessage(id: string, isOwn: boolean) {
     try {
@@ -139,9 +160,18 @@ export default function ChatRoom({ roomId, channelId }: Props) {
     return () => unsubscribe(`room:${roomId}`);
   }, [roomId, subscribe, unsubscribe]);
 
+  // Auto-scroll to bottom on new messages, but ONLY if the user was already
+  // near the bottom. Otherwise we'd yank them away from history they're
+  // reading — same UX rule Slack/Discord use.
   useEffect(() => {
-    listRef.current?.scrollTo({ top: listRef.current.scrollHeight });
-  }, [messages]);
+    const c = containerRef.current;
+    if (!c) return;
+    const nearBottom =
+      c.scrollHeight - c.scrollTop - c.clientHeight < 150;
+    if (nearBottom) {
+      c.scrollTo({ top: c.scrollHeight });
+    }
+  }, [messages, containerRef]);
 
   async function send() {
     if (!input.trim()) return;
@@ -149,6 +179,9 @@ export default function ChatRoom({ roomId, channelId }: Props) {
       setError("Вы замьючены в этом канале");
       return;
     }
+    // Client-side guard against double-clicking before the server window
+    // resets. The authoritative limit still comes from the server.
+    if (Date.now() < sendDisabledUntil) return;
     const text = input;
     setInput("");
     try {
@@ -160,8 +193,17 @@ export default function ChatRoom({ roomId, channelId }: Props) {
         ciphertext: ct,
       });
       upsertMessage({ ...data, plaintext: text });
+      setRateLimitMsg("");
     } catch (e: any) {
-      setError(e?.response?.data?.detail || e?.message || "Не удалось отправить");
+      const rl = parseRateLimit(e);
+      if (rl) {
+        setRateLimitMsg(rl.message);
+        setSendDisabledUntil(Date.now() + rl.retryAfterSeconds * 1000);
+        // Auto-clear the notice once the window expires.
+        setTimeout(() => setRateLimitMsg(""), rl.retryAfterSeconds * 1000);
+      } else {
+        setError(e?.response?.data?.detail || e?.message || "Не удалось отправить");
+      }
       setInput(text);
     }
   }
@@ -176,7 +218,21 @@ export default function ChatRoom({ roomId, channelId }: Props) {
 
   return (
     <div className="flex flex-col h-full">
-      <div ref={listRef} className="flex-1 overflow-y-auto p-4 space-y-2">
+      <div
+        ref={containerRef}
+        onScroll={onScroll}
+        className="flex-1 overflow-y-auto p-4 space-y-2"
+      >
+        {loadingOlder && (
+          <div className="text-center text-xs text-muted py-2">
+            Загрузка предыдущих сообщений…
+          </div>
+        )}
+        {!hasMore && messages.length > 0 && (
+          <div className="text-center text-xs text-muted py-2">
+            — начало переписки —
+          </div>
+        )}
         {error && <div className="text-red-400 text-sm">{error}</div>}
         {!keysReady && (
           <div className="text-muted text-sm">Установка ключей шифрования…</div>
@@ -226,6 +282,9 @@ export default function ChatRoom({ roomId, channelId }: Props) {
         {mutedLabel && (
           <div className="text-xs text-amber-400 mb-2">🔇 {mutedLabel}</div>
         )}
+        {rateLimitMsg && (
+          <div className="text-xs text-amber-400 mb-2">⏳ {rateLimitMsg}</div>
+        )}
         <div className="flex gap-2">
           <input
             value={input}
@@ -237,7 +296,7 @@ export default function ChatRoom({ roomId, channelId }: Props) {
           />
           <button
             onClick={send}
-            disabled={!!perms?.muted}
+            disabled={!!perms?.muted || Date.now() < sendDisabledUntil}
             className="bg-accent px-4 rounded disabled:opacity-50 disabled:cursor-not-allowed"
           >
             Отправить

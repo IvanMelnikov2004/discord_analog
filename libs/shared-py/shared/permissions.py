@@ -17,6 +17,10 @@ class Permission(IntFlag):
     CREATE_INVITE = 1 << 8
     CONNECT_VOICE = 1 << 9
     SPEAK_VOICE = 1 << 10
+    # Moderate other members inside a voice room: server-mute their microphone
+    # (LiveKit refuses publish) and/or kick them out of the LiveKit session.
+    # Separate from MUTE_MEMBERS/KICK_MEMBERS which act on the whole channel.
+    VOICE_MODERATE = 1 << 11
     ADMINISTRATOR = 1 << 31
 
     @classmethod

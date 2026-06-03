@@ -30,6 +30,10 @@ logging:
 room:
   auto_create: true
   empty_timeout: 300
+  # Required for our moderator "voice unmute" action: by default LiveKit
+  # forbids server-side unmute (to prevent surprise unmutes). We allow it
+  # because un-mute is gated by VOICE_MODERATE on our side already.
+  enable_remote_unmute: true
 
 # Built-in TURN over TLS. Helps clients behind strict NATs/firewalls connect.
 # For a quick demo you can leave this disabled and rely on host-direct UDP.

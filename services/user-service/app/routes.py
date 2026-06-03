@@ -87,6 +87,22 @@ async def search(
     return [ProfileResponse.model_validate(p) for p in result.scalars().all()]
 
 
+@router.get("/by-username/{username}", response_model=ProfileResponse)
+async def get_by_username(
+    username: str,
+    _: CurrentUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> ProfileResponse:
+    """Exact-match lookup, used by 'Start DM by username'."""
+    result = await db.execute(
+        select(UserProfile).where(UserProfile.username == username)
+    )
+    profile = result.scalar_one_or_none()
+    if not profile:
+        raise HTTPException(404, "User not found")
+    return ProfileResponse.model_validate(profile)
+
+
 # ---------- Friendships ----------
 
 @router.post("/friends", response_model=FriendshipResponse, status_code=201)
