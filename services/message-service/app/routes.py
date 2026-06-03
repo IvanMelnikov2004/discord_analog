@@ -131,19 +131,31 @@ async def send_message(
     await messages_collection.insert_one(doc)
     response = _to_response(doc)
 
-    # Publish to Redis for gateway-service to deliver
-    channel = (
-        f"room:{payload.room_id}" if payload.room_id else f"dm:{make_dm_pair(current.id, payload.recipient_id)}"
-    )
-    await redis_pub.publish(
-        channel,
-        json.dumps(
-            {
-                "type": "message.new",
-                "data": response.model_dump(mode="json"),
-            }
-        ),
-    )
+    # Publish to Redis for gateway-service to deliver. For DMs we also enrich
+    # the event with dm_pair (front-end uses it to match the open conversation)
+    # and additionally push to the recipient's personal channel so their UI
+    # learns about a new DM even if they haven't opened that conversation yet.
+    event_data = response.model_dump(mode="json")
+    if payload.recipient_id is not None:
+        event_data["dm_pair"] = make_dm_pair(current.id, payload.recipient_id)
+
+    if payload.room_id is not None:
+        channel = f"room:{payload.room_id}"
+        await redis_pub.publish(
+            channel,
+            json.dumps({"type": "message.new", "data": event_data}),
+        )
+    else:
+        pair_channel = f"dm:{make_dm_pair(current.id, payload.recipient_id)}"
+        event_json = json.dumps({"type": "message.new", "data": event_data})
+        # Broadcast on the dm:<pair> topic for clients with that chat open
+        await redis_pub.publish(pair_channel, event_json)
+        # Also poke the recipient's personal channel (auto-subscribed at WS
+        # connect) so their sidebar / unread state updates immediately, even
+        # when they don't have the DM page open. Sender skipped — they
+        # already got the message back from the POST response.
+        await redis_pub.publish(f"user:{payload.recipient_id}", event_json)
+
     return response
 
 

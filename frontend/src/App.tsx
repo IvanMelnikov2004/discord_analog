@@ -7,6 +7,7 @@ import ChannelPage from "./pages/ChannelPage";
 import InvitePage from "./pages/InvitePage";
 import DmPage from "./pages/DmPage";
 import ProfilePage from "./pages/ProfilePage";
+import MainLayout from "./components/MainLayout";
 import GlobalEventListener from "./components/GlobalEventListener";
 
 function RequireAuth({ children }: { children: JSX.Element }) {
@@ -23,51 +24,33 @@ export default function App() {
           mounted across route changes so we don't churn the socket. */}
       {token && <GlobalEventListener />}
       <Routes>
-      <Route path="/login" element={<LoginPage />} />
-      <Route path="/register" element={<RegisterPage />} />
-      <Route path="/invite/:code" element={<InvitePage />} />
-      <Route
-        path="/"
-        element={
-          <RequireAuth>
-            <HomePage />
-          </RequireAuth>
-        }
-      />
-      <Route
-        path="/profile/:userId"
-        element={
-          <RequireAuth>
-            <ProfilePage />
-          </RequireAuth>
-        }
-      />
-      <Route
-        path="/dm/:peerId"
-        element={
-          <RequireAuth>
-            <DmPage />
-          </RequireAuth>
-        }
-      />
-      <Route
-        path="/channels/:channelId"
-        element={
-          <RequireAuth>
-            <ChannelPage />
-          </RequireAuth>
-        }
-      />
-      <Route
-        path="/channels/:channelId/rooms/:roomId"
-        element={
-          <RequireAuth>
-            <ChannelPage />
-          </RequireAuth>
-        }
-      />
-      <Route path="*" element={<Navigate to="/" replace />} />
-    </Routes>
+        {/* Public */}
+        <Route path="/login" element={<LoginPage />} />
+        <Route path="/register" element={<RegisterPage />} />
+        <Route path="/invite/:code" element={<InvitePage />} />
+
+        {/* Authenticated app shell: persistent left sidebar (channels, DMs,
+            profile), pages render into <Outlet />. Sidebar stays mounted
+            across navigations so WS state and lists don't reload. */}
+        <Route
+          element={
+            <RequireAuth>
+              <MainLayout />
+            </RequireAuth>
+          }
+        >
+          <Route path="/" element={<HomePage />} />
+          <Route path="/profile/:userId" element={<ProfilePage />} />
+          <Route path="/dm/:peerId" element={<DmPage />} />
+          <Route path="/channels/:channelId" element={<ChannelPage />} />
+          <Route
+            path="/channels/:channelId/rooms/:roomId"
+            element={<ChannelPage />}
+          />
+        </Route>
+
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Routes>
     </>
   );
 }

@@ -107,7 +107,7 @@ export default function ChannelPage() {
   }
 
   return (
-    <div className="h-screen flex">
+    <div className="h-full flex">
       {/* Sidebar */}
       <aside className="w-64 bg-panel flex flex-col">
         <div className="p-4 border-b border-panel2">

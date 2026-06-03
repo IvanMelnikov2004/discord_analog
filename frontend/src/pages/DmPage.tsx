@@ -193,7 +193,7 @@ export default function DmPage() {
   const peerName = peer?.display_name || peer?.username || peerId.slice(0, 8);
 
   return (
-    <div className="h-screen flex flex-col">
+    <div className="h-full flex flex-col">
       <header className="bg-panel border-b border-panel2 p-3 flex items-center gap-3">
         <Link to="/" className="text-muted text-sm">←</Link>
         <Avatar seed={peerId} name={peerName} size={36} />
