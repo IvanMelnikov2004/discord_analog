@@ -195,6 +195,11 @@ services:
       LIVEKIT_API_KEY: ${LIVEKIT_API_KEY}
       LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET}
       LIVEKIT_URL: ${LIVEKIT_URL}
+      # Internal host/port for server-to-server Twirp calls. Falls back to
+      # the compose service name if .env doesn't set them — that's the right
+      # default inside the docker network.
+      LIVEKIT_HOST: ${LIVEKIT_HOST:-livekit}
+      LIVEKIT_PORT: ${LIVEKIT_PORT:-7880}
       CHANNEL_SERVICE_URL: http://channel-service:8000
     networks: [backend]
     labels:

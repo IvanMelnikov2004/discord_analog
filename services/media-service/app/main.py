@@ -1,5 +1,6 @@
 from contextlib import asynccontextmanager
 import json
+import logging
 from uuid import UUID
 
 import httpx
@@ -15,6 +16,7 @@ from shared.logging import configure_logging
 
 settings = get_settings()
 configure_logging(settings.SERVICE_NAME, settings.LOG_LEVEL)
+logger = logging.getLogger(__name__)
 get_current_user = make_current_user_dependency(settings.JWT_SECRET_KEY, settings.JWT_ALGORITHM)
 
 # Publisher for events that need to reach a specific user's WebSocket (e.g.
@@ -129,13 +131,14 @@ def _require_voice_move(perms: dict | None) -> None:
 
 
 def _livekit_http_url() -> str:
-    """LiveKit Room Service uses HTTP(S), not WS. Derive from LIVEKIT_URL."""
-    url = settings.LIVEKIT_URL
-    if url.startswith("wss://"):
-        return "https://" + url[6:]
-    if url.startswith("ws://"):
-        return "http://" + url[5:]
-    return url
+    """Server-to-server URL for LiveKit Room Service (Twirp).
+
+    IMPORTANT: must hit LiveKit directly inside the docker network, NOT
+    through the public ingress — Traefik has no route for /twirp/* and
+    would 404, surfacing as `httpx.HTTPStatusError` inside the SDK and
+    a 500 to the client. Public WSS URL is used only by browsers.
+    """
+    return settings.livekit_internal_url
 
 
 # ---------- Routes ----------
@@ -254,17 +257,43 @@ async def voice_mute_participant(
             None,
         )
         if not target:
-            raise HTTPException(404, "Participant not in this voice room")
+            raise HTTPException(404, "Участник не находится в этой голосовой комнате")
+
+        # In the LiveKit proto, TrackType is an int enum where AUDIO = 0. We
+        # also tolerate the enum-shaped value if some SDK build returns one.
+        muted_count = 0
         for track in target.tracks:
-            if track.type == 0:  # AUDIO; (0=AUDIO, 1=VIDEO, 2=DATA in proto)
-                await lkapi.room.mute_published_track(
-                    api.MuteRoomTrackRequest(
-                        room=room_name,
-                        identity=payload.target_identity,
-                        track_sid=track.sid,
-                        muted=payload.muted,
-                    )
+            track_type = getattr(track, "type", None)
+            is_audio = (
+                track_type == 0
+                or (hasattr(track_type, "name") and track_type.name == "AUDIO")
+            )
+            if not is_audio:
+                continue
+            await lkapi.room.mute_published_track(
+                api.MuteRoomTrackRequest(
+                    room=room_name,
+                    identity=payload.target_identity,
+                    track_sid=track.sid,
+                    muted=payload.muted,
                 )
+            )
+            muted_count += 1
+
+        if muted_count == 0:
+            # No published mic — nothing to mute server-side. This is normal
+            # when the target hasn't enabled their microphone yet. Their
+            # next token request will already carry the channel-mute flag
+            # if you also channel-muted them.
+            logger.info(
+                "voice-mute: target %s has no audio tracks in room %s",
+                payload.target_identity, room_name,
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("voice-mute failed: %s", e, exc_info=True)
+        raise HTTPException(500, f"Ошибка при мьюте: {e}")
     finally:
         await lkapi.aclose()
 
@@ -300,6 +329,9 @@ async def voice_kick_participant(
         await lkapi.room.remove_participant(
             api.RoomParticipantIdentity(room=room_name, identity=payload.target_identity)
         )
+    except Exception as e:
+        logger.error("voice-kick failed: %s", e, exc_info=True)
+        raise HTTPException(500, f"Ошибка при исключении из голоса: {e}")
     finally:
         await lkapi.aclose()
 
@@ -344,16 +376,19 @@ async def voice_move_participant(
     )
     try:
         # remove_participant is idempotent — if they're not actually in the
-        # source room (race with manual leave), LiveKit just returns OK.
+        # source room (race with manual leave), LiveKit returns OK.
         await lkapi.room.remove_participant(
             api.RoomParticipantIdentity(
                 room=src_room, identity=payload.target_identity
             )
         )
-    except Exception:
-        # Don't fail the whole move if disconnect fails — the destination
-        # push is what matters. Worst case: target has two sessions briefly.
-        pass
+    except Exception as e:
+        # Log but don't fail the whole move — the destination push is what
+        # really matters. If LiveKit was truly unreachable we'll see that
+        # in the publish step too.
+        logger.warning(
+            "voice-move: remove_participant failed: %s", e, exc_info=True
+        )
     finally:
         await lkapi.aclose()
 
@@ -373,8 +408,11 @@ async def voice_move_participant(
                 }
             ),
         )
-    except Exception:
-        # Pub/sub failure leaves the user disconnected from voice — they'll
-        # see "you were disconnected" notice. Not catastrophic; they rejoin
-        # manually. We don't 500 because the disconnect already happened.
-        pass
+    except Exception as e:
+        # Pub/sub failure means the target was disconnected but won't
+        # auto-rejoin. Better to fail loudly here so we can detect Redis
+        # issues than silently leave them stranded.
+        logger.error("voice-move: publish failed: %s", e, exc_info=True)
+        raise HTTPException(
+            500, "Перемещение не доставлено: не удалось уведомить пользователя"
+        )
