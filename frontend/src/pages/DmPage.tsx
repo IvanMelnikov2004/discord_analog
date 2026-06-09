@@ -154,14 +154,32 @@ export default function DmPage() {
     return () => unsubscribe(channel);
   }, [peerId, myId, subscribe, unsubscribe]);
 
+  // On the first load of a conversation, jump to the latest message. Track
+  // per `peerId` so switching DMs triggers a fresh initial jump.
+  const [initialScrollDone, setInitialScrollDone] = useState(false);
+  useEffect(() => {
+    setInitialScrollDone(false);
+  }, [peerId]);
+  useEffect(() => {
+    if (initialScrollDone) return;
+    if (messages.length === 0) return;
+    const c = containerRef.current;
+    if (!c) return;
+    requestAnimationFrame(() => {
+      c.scrollTop = c.scrollHeight;
+      setInitialScrollDone(true);
+    });
+  }, [messages, initialScrollDone, containerRef]);
+
   // Auto-scroll on new messages only when the user is already near the
   // bottom — otherwise we'd yank them out of older history they're reading.
   useEffect(() => {
+    if (!initialScrollDone) return;
     const c = containerRef.current;
     if (!c) return;
     const nearBottom = c.scrollHeight - c.scrollTop - c.clientHeight < 150;
     if (nearBottom) c.scrollTo({ top: c.scrollHeight });
-  }, [messages, containerRef]);
+  }, [messages, initialScrollDone, containerRef]);
 
   async function send() {
     if (!input.trim() || !peerId) return;

@@ -160,10 +160,30 @@ export default function ChatRoom({ roomId, channelId }: Props) {
     return () => unsubscribe(`room:${roomId}`);
   }, [roomId, subscribe, unsubscribe]);
 
+  // On the FIRST load of a room's history, always jump to the bottom — the
+  // user wants the latest messages, not the start of the chat. We track this
+  // per `roomId` so switching rooms also triggers the initial jump.
+  const [initialScrollDone, setInitialScrollDone] = useState(false);
+  useEffect(() => {
+    setInitialScrollDone(false);
+  }, [roomId]);
+  useEffect(() => {
+    if (initialScrollDone) return;
+    if (messages.length === 0) return;
+    const c = containerRef.current;
+    if (!c) return;
+    // Run after layout has flushed so scrollHeight reflects the new messages.
+    requestAnimationFrame(() => {
+      c.scrollTop = c.scrollHeight;
+      setInitialScrollDone(true);
+    });
+  }, [messages, initialScrollDone, containerRef]);
+
   // Auto-scroll to bottom on new messages, but ONLY if the user was already
   // near the bottom. Otherwise we'd yank them away from history they're
   // reading — same UX rule Slack/Discord use.
   useEffect(() => {
+    if (!initialScrollDone) return;
     const c = containerRef.current;
     if (!c) return;
     const nearBottom =
@@ -171,7 +191,7 @@ export default function ChatRoom({ roomId, channelId }: Props) {
     if (nearBottom) {
       c.scrollTo({ top: c.scrollHeight });
     }
-  }, [messages, containerRef]);
+  }, [messages, initialScrollDone, containerRef]);
 
   async function send() {
     if (!input.trim()) return;

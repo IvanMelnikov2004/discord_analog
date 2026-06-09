@@ -8,10 +8,12 @@ import {
   Track,
   DisconnectReason,
 } from "livekit-client";
+import { useQuery } from "@tanstack/react-query";
 import { api } from "../api";
 import { useAuthStore } from "../store/auth";
 import { useMyPermissions } from "../hooks/useMyPermissions";
 import { useMemberRoles } from "../hooks/useMemberRoles";
+import Avatar from "./Avatar";
 
 interface Props {
   roomId: string;
@@ -281,11 +283,45 @@ export default function VoiceRoom({ roomId, channelId }: Props) {
     }
   }
 
-  // Helpful labels: prefer nickname/top role color from member roles cache.
+  // Fetch user-service profiles for everyone currently in this voice room
+  // so we can show their username/display name and a colored avatar
+  // (the seed = uuid is stable so each user always gets the same color).
+  interface VoiceProfile {
+    user_id: string;
+    username: string;
+    display_name: string | null;
+  }
+  const participantIds = participants.map((p) => p.identity).sort().join(",");
+  const { data: voiceProfiles = {} } = useQuery<Record<string, VoiceProfile>>({
+    queryKey: ["voice-profiles", participantIds],
+    enabled: participants.length > 0,
+    queryFn: async () => {
+      const out: Record<string, VoiceProfile> = {};
+      await Promise.all(
+        participants.map(async (p) => {
+          try {
+            const { data } = await api.get<VoiceProfile>(`/users/${p.identity}`);
+            out[p.identity] = data;
+          } catch {
+            /* fall back to uuid prefix below */
+          }
+        })
+      );
+      return out;
+    },
+  });
+
+  // Helpful labels: prefer nickname (channel-scoped) → display_name →
+  // username → uuid prefix. Color still comes from the role cache.
   function labelFor(identity: string): { text: string; color?: string } {
     const info = roleInfo[identity];
-    const nick = info?.nickname || identity.slice(0, 8);
-    return { text: nick, color: info?.topRole?.color || undefined };
+    const profile = voiceProfiles[identity];
+    const text =
+      info?.nickname ||
+      profile?.display_name ||
+      profile?.username ||
+      identity.slice(0, 8);
+    return { text, color: info?.topRole?.color || undefined };
   }
 
   useEffect(
@@ -308,9 +344,15 @@ export default function VoiceRoom({ roomId, channelId }: Props) {
       )}
 
       {!connected ? (
-        <button onClick={join} className="bg-accent px-4 py-2 rounded">
-          Зайти в голос
-        </button>
+        can("CONNECT_VOICE") ? (
+          <button onClick={join} className="bg-accent px-4 py-2 rounded">
+            Зайти в голос
+          </button>
+        ) : (
+          <div className="text-sm text-muted">
+            У вас нет прав заходить в голосовые комнаты
+          </div>
+        )
       ) : (
         <>
           {!canPublish && (
@@ -332,6 +374,7 @@ export default function VoiceRoom({ roomId, channelId }: Props) {
                   }`}
                 >
                   <div className="flex items-center gap-2 text-sm">
+                    <Avatar seed={p.identity} name={lab.text} size={28} />
                     <span style={lab.color ? { color: lab.color } : undefined}>
                       {lab.text}
                       {p.isLocal && (

@@ -123,16 +123,36 @@ async def issue_token(
 ) -> TokenResponse:
     """Issue a short-lived LiveKit access token.
 
-    If the caller is muted in the channel, the token is issued with
-    can_publish=false (subscribe only). They can still hear others.
+    Server-side gating, in this order:
+      - Caller must have CONNECT_VOICE in the channel (else 403).
+      - Caller must NOT be channel-muted (else can_publish=false).
+      - Caller must have SPEAK_VOICE to publish microphone (else
+        can_publish=false). They can still listen.
     """
     identity = payload.identity or str(current.id)
     room_name = f"room-{payload.room_id}"
 
-    muted = await _is_muted_in_channel(
+    # Look up our standing in the channel once and reuse for all checks.
+    perms = await _fetch_channel_perms(
         str(payload.channel_id) if payload.channel_id else "",
         request.headers.get("Authorization"),
     )
+    if not perms:
+        # No channel_id passed, or channel-service unreachable. Fail closed:
+        # we won't mint tokens for unverifiable callers — this is what
+        # closes the "user without CONNECT_VOICE could still join" hole.
+        raise HTTPException(403, "Не удалось проверить права в канале")
+
+    is_admin_or_owner = bool(perms.get("is_admin") or perms.get("is_owner"))
+    names = perms.get("names", [])
+
+    if not (is_admin_or_owner or "CONNECT_VOICE" in names):
+        raise HTTPException(403, "У вас нет прав заходить в голосовые комнаты")
+
+    muted = bool(perms.get("muted"))
+    can_speak = is_admin_or_owner or "SPEAK_VOICE" in names
+    # Effective publish right: must have SPEAK_VOICE AND not be channel-muted.
+    can_publish = can_speak and not muted
 
     try:
         token = (
@@ -143,7 +163,7 @@ async def issue_token(
                 api.VideoGrants(
                     room_join=True,
                     room=room_name,
-                    can_publish=not muted,
+                    can_publish=can_publish,
                     can_subscribe=True,
                 )
             )
@@ -157,7 +177,7 @@ async def issue_token(
         url=settings.LIVEKIT_URL,
         room=room_name,
         identity=identity,
-        can_publish=not muted,
+        can_publish=can_publish,
     )
 
 

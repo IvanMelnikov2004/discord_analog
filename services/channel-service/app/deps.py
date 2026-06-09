@@ -131,10 +131,30 @@ def require_permission(perm: Permission):
     ) -> MemberContext:
         ctx = await get_member_context(db, channel_id, current.id)
         if not has_permission(ctx.permissions, perm):
-            raise HTTPException(403, f"Missing permission: {perm.name}")
+            raise HTTPException(403, _PERMISSION_DENIED_RU.get(
+                perm.name, f"Недостаточно прав: {perm.name}"
+            ))
         return ctx
 
     return checker
+
+
+# Human-readable Russian messages for permission denials. The dict key is the
+# Permission enum's `.name`; if missing, we fall back to a generic message.
+_PERMISSION_DENIED_RU: dict[str, str] = {
+    "VIEW_CHANNEL":        "У вас нет доступа к этому каналу",
+    "SEND_MESSAGES":       "У вас нет прав писать в этом канале",
+    "MANAGE_MESSAGES":     "У вас нет прав удалять чужие сообщения",
+    "KICK_MEMBERS":        "У вас нет прав исключать участников",
+    "BAN_MEMBERS":         "У вас нет прав банить участников",
+    "MUTE_MEMBERS":        "У вас нет прав мьютить участников",
+    "MANAGE_ROLES":        "У вас нет прав управлять ролями",
+    "MANAGE_CHANNELS":     "У вас нет прав управлять каналом",
+    "CREATE_INVITE":       "У вас нет прав создавать приглашения",
+    "CONNECT_VOICE":       "У вас нет прав заходить в голосовые комнаты",
+    "SPEAK_VOICE":         "У вас нет прав говорить в голосовых комнатах",
+    "VOICE_MODERATE":      "У вас нет прав модерировать голос",
+}
 
 
 async def get_target_rank(

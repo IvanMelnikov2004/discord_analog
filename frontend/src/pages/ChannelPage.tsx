@@ -167,7 +167,7 @@ export default function ChannelPage() {
         </div>
 
         <div className="flex-1 overflow-y-auto p-2">
-          <div className="text-xs uppercase text-muted px-2 py-1">Text rooms</div>
+          <div className="text-xs uppercase text-muted px-2 py-1">Текстовые комнаты</div>
           {rooms
             .filter((r) => r.room_type === "text")
             .map((r) => (
@@ -192,7 +192,7 @@ export default function ChannelPage() {
               </div>
             ))}
 
-          <div className="text-xs uppercase text-muted px-2 py-1 mt-3">Voice rooms</div>
+          <div className="text-xs uppercase text-muted px-2 py-1 mt-3">Голосовые комнаты</div>
           {rooms
             .filter((r) => r.room_type === "voice")
             .map((r) => (
@@ -222,7 +222,7 @@ export default function ChannelPage() {
               <input
                 value={newRoomName}
                 onChange={(e) => setNewRoomName(e.target.value)}
-                placeholder="New room name"
+                placeholder="Название новой комнаты"
               className="w-full bg-panel p-1 text-sm rounded"
             />
             <select
@@ -234,7 +234,7 @@ export default function ChannelPage() {
               <option value="voice">voice</option>
             </select>
             <button onClick={createRoom} className="w-full bg-accent text-sm py-1 rounded">
-              + Create room
+              + Создать комнату
             </button>
             </div>
           )}
@@ -311,7 +311,7 @@ export default function ChannelPage() {
 
       {/* Members panel */}
       <aside className="w-56 bg-panel border-l border-panel2 p-4 overflow-y-auto">
-        <div className="text-xs uppercase text-muted mb-2">Members ({members.length})</div>
+        <div className="text-xs uppercase text-muted mb-2">Участники ({members.length})</div>
         {members.map((m) => {
           const role = roleInfo[m.user_id]?.topRole;
           // Hierarchy: I can act on a member only if my rank strictly exceeds

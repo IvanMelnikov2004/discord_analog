@@ -97,7 +97,7 @@ async def send_message(
             or status.get("is_owner")
             or "SEND_MESSAGES" in status.get("names", [])
         ):
-            raise HTTPException(403, "Missing permission: SEND_MESSAGES")
+            raise HTTPException(403, "У вас нет прав писать в этом канале")
 
     # Rate-limit per (user, conversation). Scope distinguishes rooms from DMs
     # so a chatty channel doesn't eat into your DM budget and vice versa.
@@ -252,7 +252,7 @@ async def delete_message(
             channel_id or "", request.headers.get("Authorization")
         )
         if not allowed:
-            raise HTTPException(403, "Missing permission: MANAGE_MESSAGES")
+            raise HTTPException(403, "У вас нет прав удалять чужие сообщения")
 
     await messages_collection.delete_one({"id": str(message_id)})
 
