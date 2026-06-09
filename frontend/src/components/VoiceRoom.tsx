@@ -22,6 +22,11 @@ interface ParticipantView {
   identity: string;
   isLocal: boolean;
   speaking: boolean;
+  /** True when the participant's microphone is muted (server- or self-).
+   *  We can't distinguish moderator-mute from self-mute on the client —
+   *  LiveKit only exposes "track muted". For our UI that's fine: the
+   *  toggle works the same way and the server enforces VOICE_MODERATE. */
+  micMuted: boolean;
 }
 
 /**
@@ -170,6 +175,11 @@ export default function VoiceRoom({ roomId, channelId }: Props) {
         updateParticipants(r);
       });
       r.on(RoomEvent.ActiveSpeakersChanged, () => updateParticipants(r));
+      // When any participant's microphone is muted/unmuted (either by self
+      // or by a moderator via mute_published_track), refresh the view so
+      // the mic icon next to their name updates instantly.
+      r.on(RoomEvent.TrackMuted, () => updateParticipants(r));
+      r.on(RoomEvent.TrackUnmuted, () => updateParticipants(r));
 
       // When a moderator kicks us, LiveKit fires Disconnected with a reason.
       r.on(RoomEvent.Disconnected, (reason?: DisconnectReason) => {
@@ -199,17 +209,26 @@ export default function VoiceRoom({ roomId, channelId }: Props) {
 
   function updateParticipants(r: Room) {
     const speakingSet = new Set(r.activeSpeakers.map((p) => p.identity));
+    // For local: LiveKit tracks the user's own mic via isMicrophoneEnabled().
+    // For remote: the audio publication (Track.Source.Microphone) exposes
+    // `.isMuted`. If there's no audio publication yet (they haven't unmuted
+    // ever), treat as muted — they can't be heard anyway.
     const me: ParticipantView = {
       identity: r.localParticipant.identity,
       isLocal: true,
       speaking: speakingSet.has(r.localParticipant.identity),
+      micMuted: !r.localParticipant.isMicrophoneEnabled,
     };
     const others: ParticipantView[] = Array.from(r.remoteParticipants.values()).map(
-      (p) => ({
-        identity: p.identity,
-        isLocal: false,
-        speaking: speakingSet.has(p.identity),
-      })
+      (p) => {
+        const micPub = p.getTrackPublication(Track.Source.Microphone);
+        return {
+          identity: p.identity,
+          isLocal: false,
+          speaking: speakingSet.has(p.identity),
+          micMuted: !micPub || micPub.isMuted,
+        };
+      }
     );
     setParticipants([me, ...others]);
   }
@@ -322,18 +341,15 @@ export default function VoiceRoom({ roomId, channelId }: Props) {
                     {!p.isLocal && canModerateVoice && (
                       <span className="ml-auto flex gap-1">
                         <button
-                          onClick={() => modVoiceMute(p.identity, true)}
+                          onClick={() => modVoiceMute(p.identity, !p.micMuted)}
                           className="text-xs bg-bg hover:bg-panel px-2 py-0.5 rounded"
-                          title="Server-mute: запретить микрофон"
+                          title={
+                            p.micMuted
+                              ? "Снять серверный мьют"
+                              : "Серверный мьют: запретить микрофон"
+                          }
                         >
-                          🔇 mod-mute
-                        </button>
-                        <button
-                          onClick={() => modVoiceMute(p.identity, false)}
-                          className="text-xs bg-bg hover:bg-panel px-2 py-0.5 rounded"
-                          title="Server-unmute"
-                        >
-                          🔊 unmute
+                          {p.micMuted ? "🔊 unmute" : "🔇 mute"}
                         </button>
                         <button
                           onClick={() => modVoiceKick(p.identity)}

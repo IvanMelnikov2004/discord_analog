@@ -465,6 +465,19 @@ async def kick_member(
     await publish_user_event(
         kicked_user_id, "user.kicked", {"channel_id": str(channel_id)}
     )
+    # Tell everyone still in the channel that the roster shrank, so their
+    # right-side member list updates without a refresh.
+    remaining_q = await db.execute(
+        select(ChannelMember.user_id).where(
+            ChannelMember.channel_id == channel_id
+        )
+    )
+    for uid in remaining_q.scalars().all():
+        await publish_user_event(
+            uid,
+            "member.left",
+            {"channel_id": str(channel_id), "user_id": str(kicked_user_id)},
+        )
 
 
 @router.patch("/{channel_id}/members/{member_id}/mute", status_code=204)

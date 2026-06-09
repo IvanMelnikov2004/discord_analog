@@ -7,8 +7,10 @@ import VoiceRoom from "../components/VoiceRoom";
 import RoleManager from "../components/RoleManager";
 import MemberActions from "../components/MemberActions";
 import BanList from "../components/BanList";
+import Avatar from "../components/Avatar";
 import { useMemberRoles } from "../hooks/useMemberRoles";
 import { useMyPermissions } from "../hooks/useMyPermissions";
+import { useWebSocket } from "../hooks/useWebSocket";
 
 interface Channel {
   id: string;
@@ -62,7 +64,54 @@ export default function ChannelPage() {
     enabled: !!channelId,
   });
 
+  // Resolve member -> profile so we can show usernames + initials instead of
+  // raw uuids. One small request per member; with realistic channel sizes
+  // (<200) this is fine. Keyed by the concatenated id list so React Query
+  // refetches when the membership actually changes.
+  interface Profile {
+    user_id: string;
+    username: string;
+    display_name: string | null;
+  }
+  const { data: memberProfiles = {} } = useQuery<Record<string, Profile>>({
+    queryKey: [
+      "member-profiles",
+      channelId,
+      members.map((m) => m.user_id).sort().join(","),
+    ],
+    enabled: members.length > 0,
+    queryFn: async () => {
+      const out: Record<string, Profile> = {};
+      await Promise.all(
+        members.map(async (m) => {
+          try {
+            const { data } = await api.get<Profile>(`/users/${m.user_id}`);
+            out[m.user_id] = data;
+          } catch {
+            /* user-service unavailable or profile missing — fall back to uuid */
+          }
+        })
+      );
+      return out;
+    },
+  });
+
   const { data: roleInfo = {} } = useMemberRoles(channelId);
+
+  // Refresh members list when someone joins the channel I'm in. The server
+  // already publishes member.joined on each existing member's user channel
+  // (used for sender-key redistribution); we hook into the same event here
+  // so the right-side roster updates without a page reload.
+  useWebSocket((ev) => {
+    if (!channelId) return;
+    if (
+      (ev.type === "member.joined" || ev.type === "member.left") &&
+      ev.data?.channel_id === channelId
+    ) {
+      qc.invalidateQueries({ queryKey: ["members", channelId] });
+      qc.invalidateQueries({ queryKey: ["memberRoleInfo", channelId] });
+    }
+  });
 
   // Auto-select first text room if none chosen
   useEffect(() => {
@@ -274,9 +323,25 @@ export default function ChannelPage() {
             !targetIsOwner && (myPerms?.is_owner || myRank > targetRank);
 
           return (
-            <div key={m.id} className="text-sm py-1 flex items-center gap-1.5 group">
-              <span style={role?.color ? { color: role.color } : undefined} className="truncate">
-                {m.nickname || m.user_id.slice(0, 8)}
+            <div key={m.id} className="text-sm py-1 flex items-center gap-2 group">
+              <Avatar
+                seed={m.user_id}
+                name={
+                  memberProfiles[m.user_id]?.display_name ||
+                  memberProfiles[m.user_id]?.username ||
+                  m.user_id
+                }
+                size={24}
+              />
+              <span
+                style={role?.color ? { color: role.color } : undefined}
+                className="truncate min-w-0"
+              >
+                {/* Prefer channel nickname → display_name → username → uuid */}
+                {m.nickname ||
+                  memberProfiles[m.user_id]?.display_name ||
+                  memberProfiles[m.user_id]?.username ||
+                  m.user_id.slice(0, 8)}
               </span>
               {role && (
                 <span
