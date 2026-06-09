@@ -21,6 +21,12 @@ class Permission(IntFlag):
     # (LiveKit refuses publish) and/or kick them out of the LiveKit session.
     # Separate from MUTE_MEMBERS/KICK_MEMBERS which act on the whole channel.
     VOICE_MODERATE = 1 << 11
+    # Drag-and-drop / push a member from one voice room to another in the same
+    # channel. Implemented as: remove them from the current LiveKit room and
+    # tell their client to auto-join the destination. Separate from
+    # VOICE_MODERATE because moving is less disruptive than kicking — many
+    # mods should have one without the other.
+    MOVE_VOICE_MEMBERS = 1 << 12
     ADMINISTRATOR = 1 << 31
 
     @classmethod

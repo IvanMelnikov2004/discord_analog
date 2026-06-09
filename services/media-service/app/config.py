@@ -1,8 +1,8 @@
 from functools import lru_cache
-from shared.config import BaseAppSettings
+from shared.config import BaseAppSettings, RedisMixin
 
 
-class Settings(BaseAppSettings):
+class Settings(BaseAppSettings, RedisMixin):
     SERVICE_NAME: str = "media-service"
     LIVEKIT_API_KEY: str = "devkey"
     LIVEKIT_API_SECRET: str = "devsecret"

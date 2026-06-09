@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useLocation } from "react-router-dom";
 import {
   Room,
   RoomEvent,
@@ -63,6 +64,28 @@ export default function VoiceRoom({ roomId, channelId }: Props) {
   const { can } = useMyPermissions(channelId);
   const { data: roleInfo = {} } = useMemberRoles(channelId);
   const canModerateVoice = can("VOICE_MODERATE");
+  const canMoveVoice = can("MOVE_VOICE_MEMBERS");
+
+  // List of voice rooms in this channel — used to render the "Move to ..."
+  // submenu. Filtered to other rooms (excluding the current one).
+  interface RoomItem {
+    id: string;
+    name: string;
+    room_type: "text" | "voice";
+  }
+  const { data: allRooms = [] } = useQuery<RoomItem[]>({
+    queryKey: ["rooms", channelId],
+    queryFn: async () =>
+      (await api.get<RoomItem[]>(`/channels/${channelId}/rooms`)).data,
+    enabled: !!channelId,
+  });
+  const otherVoiceRooms = allRooms.filter(
+    (r) => r.room_type === "voice" && r.id !== roomId
+  );
+
+  // Which participant's "Move to" submenu is currently open. Closed on
+  // any click outside / after the move call returns.
+  const [moveMenuFor, setMoveMenuFor] = useState<string | null>(null);
 
   const [room, setRoom] = useState<Room | null>(null);
   const [connected, setConnected] = useState(false);
@@ -283,6 +306,19 @@ export default function VoiceRoom({ roomId, channelId }: Props) {
     }
   }
 
+  async function modVoiceMove(targetIdentity: string, targetRoomId: string) {
+    setMoveMenuFor(null);
+    try {
+      await api.post(`/media/rooms/${roomId}/voice-move`, {
+        channel_id: channelId,
+        target_identity: targetIdentity,
+        target_room_id: targetRoomId,
+      });
+    } catch (e: any) {
+      setError(e?.response?.data?.detail || "Не удалось переместить");
+    }
+  }
+
   // Fetch user-service profiles for everyone currently in this voice room
   // so we can show their username/display name and a colored avatar
   // (the seed = uuid is stable so each user always gets the same color).
@@ -323,6 +359,22 @@ export default function VoiceRoom({ roomId, channelId }: Props) {
       identity.slice(0, 8);
     return { text, color: info?.topRole?.color || undefined };
   }
+
+  // When a moderator pushes us to a new voice room, GlobalEventListener
+  // navigates here with ?autojoin=1. Trigger join() automatically so the
+  // user doesn't have to click "Зайти в голос" again. Guarded against
+  // double-trigger and re-runs when room/channel changes.
+  const location = useLocation();
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    if (params.get("autojoin") !== "1") return;
+    if (connected) return;
+    if (!can("CONNECT_VOICE")) return;
+    void join();
+    // We deliberately don't clean the URL — VoiceRoom remounts on room
+    // change anyway, and the autojoin only fires once per mount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location.search, roomId, channelId]);
 
   useEffect(
     () => () => {
@@ -381,26 +433,63 @@ export default function VoiceRoom({ roomId, channelId }: Props) {
                         <span className="text-muted text-xs"> (вы)</span>
                       )}
                     </span>
-                    {!p.isLocal && canModerateVoice && (
-                      <span className="ml-auto flex gap-1">
-                        <button
-                          onClick={() => modVoiceMute(p.identity, !p.micMuted)}
-                          className="text-xs bg-bg hover:bg-panel px-2 py-0.5 rounded"
-                          title={
-                            p.micMuted
-                              ? "Снять серверный мьют"
-                              : "Серверный мьют: запретить микрофон"
-                          }
-                        >
-                          {p.micMuted ? "🔊 unmute" : "🔇 mute"}
-                        </button>
-                        <button
-                          onClick={() => modVoiceKick(p.identity)}
-                          className="text-xs bg-red-600/70 hover:bg-red-600 px-2 py-0.5 rounded"
-                          title="Выгнать из голоса"
-                        >
-                          ✕ kick
-                        </button>
+                    {!p.isLocal && (canModerateVoice || canMoveVoice) && (
+                      <span className="ml-auto flex gap-1 relative">
+                        {canModerateVoice && (
+                          <>
+                            <button
+                              onClick={() => modVoiceMute(p.identity, !p.micMuted)}
+                              className="text-xs bg-bg hover:bg-panel px-2 py-0.5 rounded"
+                              title={
+                                p.micMuted
+                                  ? "Снять серверный мьют"
+                                  : "Серверный мьют: запретить микрофон"
+                              }
+                            >
+                              {p.micMuted ? "🔊 unmute" : "🔇 mute"}
+                            </button>
+                            <button
+                              onClick={() => modVoiceKick(p.identity)}
+                              className="text-xs bg-red-600/70 hover:bg-red-600 px-2 py-0.5 rounded"
+                              title="Выгнать из голоса"
+                            >
+                              ✕ kick
+                            </button>
+                          </>
+                        )}
+                        {canMoveVoice && otherVoiceRooms.length > 0 && (
+                          <>
+                            <button
+                              onClick={() =>
+                                setMoveMenuFor(
+                                  moveMenuFor === p.identity ? null : p.identity
+                                )
+                              }
+                              className="text-xs bg-bg hover:bg-panel px-2 py-0.5 rounded"
+                              title="Переместить в другую голосовую комнату"
+                            >
+                              ⇆ move
+                            </button>
+                            {moveMenuFor === p.identity && (
+                              <div className="absolute right-0 top-full mt-1 bg-panel2 border border-panel rounded shadow-lg text-xs z-10 min-w-[160px]">
+                                <div className="px-2 py-1 text-muted">
+                                  Переместить в:
+                                </div>
+                                {otherVoiceRooms.map((r) => (
+                                  <button
+                                    key={r.id}
+                                    onClick={() =>
+                                      modVoiceMove(p.identity, r.id)
+                                    }
+                                    className="block w-full text-left px-3 py-1.5 hover:bg-panel"
+                                  >
+                                    🔊 {r.name}
+                                  </button>
+                                ))}
+                              </div>
+                            )}
+                          </>
+                        )}
                       </span>
                     )}
                   </div>

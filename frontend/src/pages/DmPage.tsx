@@ -266,9 +266,6 @@ export default function DmPage() {
       </div>
 
       <div className="p-4 bg-panel">
-        {rateLimitMsg && (
-          <div className="text-xs text-amber-400 mb-2">⏳ {rateLimitMsg}</div>
-        )}
         <div className="flex gap-2">
           <input
             value={input}
@@ -285,6 +282,9 @@ export default function DmPage() {
             Отправить
           </button>
         </div>
+        {rateLimitMsg && (
+          <div className="text-xs text-amber-400 mt-2">⏳ {rateLimitMsg}</div>
+        )}
       </div>
     </div>
   );

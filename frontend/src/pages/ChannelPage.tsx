@@ -161,7 +161,7 @@ export default function ChannelPage() {
       <aside className="w-64 bg-panel flex flex-col">
         <div className="p-4 border-b border-panel2">
           <Link to="/" className="text-sm text-muted hover:text-text">
-            ← All channels
+            ← Все каналы
           </Link>
           <h2 className="font-semibold mt-2 truncate">{channel?.name || "..."}</h2>
         </div>

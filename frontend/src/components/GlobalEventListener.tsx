@@ -60,6 +60,17 @@ export default function GlobalEventListener() {
         alert("Канал был удалён.");
         navigate("/");
         break;
+
+      case "voice.moved":
+        // A moderator pushed me from one voice room to another. The
+        // ?autojoin=1 query tells VoiceRoom to call join() automatically
+        // after we land on the new page — the user doesn't have to click.
+        if (ev.data?.channel_id && ev.data?.room_id) {
+          navigate(
+            `/channels/${ev.data.channel_id}/rooms/${ev.data.room_id}?autojoin=1`
+          );
+        }
+        break;
     }
   };
 

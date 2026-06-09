@@ -195,12 +195,9 @@ export default function ChatRoom({ roomId, channelId }: Props) {
 
   async function send() {
     if (!input.trim()) return;
-    if (perms?.muted) {
-      setError("Вы замьючены в этом канале");
-      return;
-    }
-    // Client-side guard against double-clicking before the server window
-    // resets. The authoritative limit still comes from the server.
+    // Inputs are already disabled in these states, but guard defensively in
+    // case the keyboard shortcut fires before re-render.
+    if (perms?.muted || !can("SEND_MESSAGES")) return;
     if (Date.now() < sendDisabledUntil) return;
     const text = input;
     setInput("");
@@ -219,10 +216,13 @@ export default function ChatRoom({ roomId, channelId }: Props) {
       if (rl) {
         setRateLimitMsg(rl.message);
         setSendDisabledUntil(Date.now() + rl.retryAfterSeconds * 1000);
-        // Auto-clear the notice once the window expires.
         setTimeout(() => setRateLimitMsg(""), rl.retryAfterSeconds * 1000);
       } else {
-        setError(e?.response?.data?.detail || e?.message || "Не удалось отправить");
+        // Show this near the input so it's clearly tied to the send action.
+        setRateLimitMsg(
+          e?.response?.data?.detail || e?.message || "Не удалось отправить"
+        );
+        setTimeout(() => setRateLimitMsg(""), 5000);
       }
       setInput(text);
     }
@@ -299,29 +299,45 @@ export default function ChatRoom({ roomId, channelId }: Props) {
         })}
       </div>
       <div className="p-4 bg-panel">
-        {mutedLabel && (
-          <div className="text-xs text-amber-400 mb-2">🔇 {mutedLabel}</div>
-        )}
-        {rateLimitMsg && (
-          <div className="text-xs text-amber-400 mb-2">⏳ {rateLimitMsg}</div>
-        )}
         <div className="flex gap-2">
           <input
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && send()}
-            placeholder={perms?.muted ? "Отправка запрещена" : "Сообщение…"}
-            disabled={!!perms?.muted}
+            placeholder={
+              perms?.muted
+                ? "Отправка запрещена"
+                : !can("SEND_MESSAGES")
+                ? "У вас нет прав писать в этом канале"
+                : "Сообщение…"
+            }
+            disabled={!!perms?.muted || !can("SEND_MESSAGES")}
             className="flex-1 bg-bg p-2 rounded border border-panel2 disabled:opacity-50 disabled:cursor-not-allowed"
           />
           <button
             onClick={send}
-            disabled={!!perms?.muted || Date.now() < sendDisabledUntil}
+            disabled={
+              !!perms?.muted ||
+              !can("SEND_MESSAGES") ||
+              Date.now() < sendDisabledUntil
+            }
             className="bg-accent px-4 rounded disabled:opacity-50 disabled:cursor-not-allowed"
           >
             Отправить
           </button>
         </div>
+        {/* Notices live BELOW the input so they don't push it down on appear. */}
+        {mutedLabel && (
+          <div className="text-xs text-amber-400 mt-2">🔇 {mutedLabel}</div>
+        )}
+        {!perms?.muted && !can("SEND_MESSAGES") && (
+          <div className="text-xs text-amber-400 mt-2">
+            🚫 У вас нет прав писать в этом канале
+          </div>
+        )}
+        {rateLimitMsg && (
+          <div className="text-xs text-amber-400 mt-2">⏳ {rateLimitMsg}</div>
+        )}
       </div>
     </div>
   );

@@ -1,7 +1,9 @@
 from contextlib import asynccontextmanager
+import json
 from uuid import UUID
 
 import httpx
+import redis.asyncio as aioredis
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from livekit import api
@@ -14,6 +16,10 @@ from shared.logging import configure_logging
 settings = get_settings()
 configure_logging(settings.SERVICE_NAME, settings.LOG_LEVEL)
 get_current_user = make_current_user_dependency(settings.JWT_SECRET_KEY, settings.JWT_ALGORITHM)
+
+# Publisher for events that need to reach a specific user's WebSocket (e.g.
+# voice.moved — tells the target client to auto-join another room).
+redis_pub = aioredis.from_url(settings.redis_url, decode_responses=True)
 
 
 @asynccontextmanager
@@ -61,6 +67,16 @@ class VoiceMuteRequest(VoiceModerationRequest):
     muted: bool = True
 
 
+class VoiceMoveRequest(VoiceModerationRequest):
+    """Move a participant to another voice room in the same channel.
+
+    `target_room_id` is the destination voice room. We disconnect them from
+    the source LiveKit room and push a `voice.moved` event so their client
+    auto-joins the destination.
+    """
+    target_room_id: UUID
+
+
 # ---------- Helpers ----------
 
 async def _fetch_channel_perms(channel_id: str, auth_header: str | None) -> dict | None:
@@ -95,7 +111,21 @@ def _require_voice_moderate(perms: dict | None) -> None:
         return
     if "VOICE_MODERATE" in perms.get("names", []):
         return
-    raise HTTPException(403, "Missing permission: VOICE_MODERATE")
+    raise HTTPException(403, "У вас нет прав модерировать голос")
+
+
+def _require_voice_move(perms: dict | None) -> None:
+    """Raise 403 unless the caller can move members between voice rooms."""
+    if not perms:
+        raise HTTPException(403, "Cannot verify channel permissions")
+    if perms.get("is_admin") or perms.get("is_owner"):
+        return
+    if "MOVE_VOICE_MEMBERS" in perms.get("names", []):
+        return
+    raise HTTPException(
+        403,
+        "У вас нет прав перемещать участников между голосовыми комнатами",
+    )
 
 
 def _livekit_http_url() -> str:
@@ -272,3 +302,79 @@ async def voice_kick_participant(
         )
     finally:
         await lkapi.aclose()
+
+
+@app.post("/api/media/rooms/{room_id}/voice-move", status_code=204)
+async def voice_move_participant(
+    room_id: UUID,
+    payload: VoiceMoveRequest,
+    request: Request,
+    current: CurrentUser = Depends(get_current_user),
+) -> None:
+    """Move a participant from voice room `room_id` to `target_room_id`.
+
+    Mechanics:
+      1. Verify the caller has MOVE_VOICE_MEMBERS in the channel.
+      2. Disconnect the target from the source LiveKit room
+         (remove_participant). Their client sees PARTICIPANT_REMOVED and
+         cleans up locally.
+      3. Publish `voice.moved` on the target's user-channel so their client
+         auto-joins the destination room without manual interaction.
+
+    The actual permission check for joining the new room (CONNECT_VOICE,
+    SPEAK_VOICE, mute) happens naturally when their client requests a new
+    token for the destination — we don't bypass anything here.
+    """
+    perms = await _fetch_channel_perms(
+        str(payload.channel_id), request.headers.get("Authorization")
+    )
+    _require_voice_move(perms)
+
+    if payload.target_identity == str(current.id):
+        raise HTTPException(
+            400, "Чтобы перейти самому, просто зайдите в нужную комнату"
+        )
+
+    # 1. Disconnect from current room.
+    src_room = f"room-{room_id}"
+    lkapi = api.LiveKitAPI(
+        _livekit_http_url(),
+        settings.LIVEKIT_API_KEY,
+        settings.LIVEKIT_API_SECRET,
+    )
+    try:
+        # remove_participant is idempotent — if they're not actually in the
+        # source room (race with manual leave), LiveKit just returns OK.
+        await lkapi.room.remove_participant(
+            api.RoomParticipantIdentity(
+                room=src_room, identity=payload.target_identity
+            )
+        )
+    except Exception:
+        # Don't fail the whole move if disconnect fails — the destination
+        # push is what matters. Worst case: target has two sessions briefly.
+        pass
+    finally:
+        await lkapi.aclose()
+
+    # 2. Tell the target's WebSocket to join the destination. Their client
+    # decides whether to auto-join (we send room+channel context).
+    try:
+        await redis_pub.publish(
+            f"user:{payload.target_identity}",
+            json.dumps(
+                {
+                    "type": "voice.moved",
+                    "data": {
+                        "channel_id": str(payload.channel_id),
+                        "room_id": str(payload.target_room_id),
+                        "from_room_id": str(room_id),
+                    },
+                }
+            ),
+        )
+    except Exception:
+        # Pub/sub failure leaves the user disconnected from voice — they'll
+        # see "you were disconnected" notice. Not catastrophic; they rejoin
+        # manually. We don't 500 because the disconnect already happened.
+        pass

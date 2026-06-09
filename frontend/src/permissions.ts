@@ -24,6 +24,7 @@ export const PERMISSIONS: PermDef[] = [
   { bit: 1 << 9, key: "CONNECT_VOICE", label: "Подключение к голосу", group: "Голос" },
   { bit: 1 << 10, key: "SPEAK_VOICE", label: "Говорить в голосе", group: "Голос" },
   { bit: 1 << 11, key: "VOICE_MODERATE", label: "Модерация голоса (мьют/кик)", group: "Голос" },
+  { bit: 1 << 12, key: "MOVE_VOICE_MEMBERS", label: "Перемещать между голосовыми", group: "Голос" },
   // ADMINISTRATOR is 1 << 31. In JS, (1 << 31) is negative due to 32-bit
   // signed shifts, so use a numeric literal instead.
   { bit: 2147483648, key: "ADMINISTRATOR", label: "Администратор (все права)", group: "Особые" },
