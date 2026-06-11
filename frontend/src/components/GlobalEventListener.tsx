@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import { useWebSocket } from "../hooks/useWebSocket";
 import { useAuthStore } from "../store/auth";
+import { markMoveInProgress } from "../voiceMoveState";
 
 /**
  * Mounted once at app root. Listens for events on the user's personal channel
@@ -66,6 +67,10 @@ export default function GlobalEventListener() {
         // ?autojoin=1 query tells VoiceRoom to call join() automatically
         // after we land on the new page — the user doesn't have to click.
         if (ev.data?.channel_id && ev.data?.room_id) {
+          // Mark this BEFORE the LiveKit Disconnected event arrives so
+          // VoiceRoom suppresses the "you were kicked" notice for this
+          // case. The flag auto-expires after ~3s.
+          markMoveInProgress();
           navigate(
             `/channels/${ev.data.channel_id}/rooms/${ev.data.room_id}?autojoin=1`
           );

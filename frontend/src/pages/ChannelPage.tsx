@@ -299,11 +299,24 @@ export default function ChannelPage() {
 
         <div className="flex-1 overflow-hidden">
           {currentRoom?.room_type === "text" && (
-            <ChatRoom roomId={currentRoom.id} channelId={channelId!} />
+            <ChatRoom
+              key={currentRoom.id}
+              roomId={currentRoom.id}
+              channelId={channelId!}
+            />
           )}
           {currentRoom?.room_type === "voice" && (
             <div className="p-4">
-              <VoiceRoom roomId={currentRoom.id} channelId={channelId!} />
+              {/* `key` forces a full remount on room change so LiveKit
+                  session, AudioContext, mic state etc. get a clean slate.
+                  Without it the component just gets new props and we leak
+                  the previous connection — especially noticeable when
+                  a moderator moves us between voice rooms. */}
+              <VoiceRoom
+                key={currentRoom.id}
+                roomId={currentRoom.id}
+                channelId={channelId!}
+              />
             </div>
           )}
         </div>

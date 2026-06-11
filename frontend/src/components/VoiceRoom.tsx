@@ -15,6 +15,7 @@ import { useAuthStore } from "../store/auth";
 import { useMyPermissions } from "../hooks/useMyPermissions";
 import { useMemberRoles } from "../hooks/useMemberRoles";
 import Avatar from "./Avatar";
+import { isMoveInProgress } from "../voiceMoveState";
 
 interface Props {
   roomId: string;
@@ -207,12 +208,17 @@ export default function VoiceRoom({ roomId, channelId }: Props) {
       r.on(RoomEvent.TrackUnmuted, () => updateParticipants(r));
 
       // When a moderator kicks us, LiveKit fires Disconnected with a reason.
+      // If a voice.moved event arrived in the last few seconds, the same
+      // reason (PARTICIPANT_REMOVED) means "moved", not "kicked" — don't
+      // alarm the user. The auto-join effect will reconnect them shortly.
       r.on(RoomEvent.Disconnected, (reason?: DisconnectReason) => {
         if (
           reason === DisconnectReason.PARTICIPANT_REMOVED ||
           reason === DisconnectReason.ROOM_DELETED
         ) {
-          setKickedNotice("Вас выгнали из голосового канала");
+          if (!isMoveInProgress()) {
+            setKickedNotice("Вас выгнали из голосового канала");
+          }
         }
         cleanup();
       });
