@@ -86,7 +86,10 @@ async def ws_endpoint(websocket: WebSocket) -> None:
             if op == "subscribe":
                 ch = msg.get("channel", "")
                 if isinstance(ch, str) and (
-                    ch.startswith("room:") or ch.startswith("dm:") or ch.startswith("user:")
+                    ch.startswith("room:")
+                    or ch.startswith("dm:")
+                    or ch.startswith("user:")
+                    or ch.startswith("channel:")
                 ):
                     await manager.subscribe(user_id, ch)
                     await websocket.send_text(

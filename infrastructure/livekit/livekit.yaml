@@ -35,6 +35,17 @@ room:
   # because un-mute is gated by VOICE_MODERATE on our side already.
   enable_remote_unmute: true
 
+# Webhooks: LiveKit POSTs participant_joined / participant_left / room_started /
+# room_finished events to the URL below as signed JWT-authenticated requests.
+# media-service forwards each event to Redis so all clients in the channel
+# see live participant counts and member lists in voice rooms.
+webhook:
+  # Key used to SIGN outgoing webhooks. Must match an entry in `keys:` above —
+  # media-service verifies the signature with the same key+secret.
+  api_key: devkey
+  urls:
+    - http://media-service:8000/api/media/webhook
+
 # Built-in TURN over TLS. Helps clients behind strict NATs/firewalls connect.
 # For a quick demo you can leave this disabled and rely on host-direct UDP.
 turn:

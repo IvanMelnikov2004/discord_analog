@@ -141,6 +141,35 @@ def _livekit_http_url() -> str:
     return settings.livekit_internal_url
 
 
+# LiveKit room name encodes BOTH the channel id and the room id so that
+# webhook handlers (which only get the room name) can publish events to the
+# right channel-wide Redis topic without an extra lookup to channel-service.
+# Format: "room-{channel_id}-{room_id}".
+def _lk_room_name(channel_id: str | UUID, room_id: str | UUID) -> str:
+    return f"room-{channel_id}-{room_id}"
+
+
+def _parse_lk_room_name(name: str) -> tuple[str, str] | None:
+    """Inverse of `_lk_room_name`. Returns (channel_id, room_id) or None.
+
+    Old-format names ("room-{uuid}") are not parseable — we just ignore
+    them in webhooks until they cycle out.
+    """
+    if not name.startswith("room-"):
+        return None
+    rest = name[len("room-"):]
+    # Two UUIDs separated by "-", but UUIDs themselves contain "-", so we
+    # rely on the fixed UUID length (36 chars) for the channel id.
+    if len(rest) < 36 + 1 + 36:
+        return None
+    channel_id = rest[:36]
+    sep = rest[36]
+    room_id = rest[37:]
+    if sep != "-" or len(room_id) != 36:
+        return None
+    return channel_id, room_id
+
+
 # ---------- Routes ----------
 
 @app.get("/health")
@@ -163,7 +192,13 @@ async def issue_token(
         can_publish=false). They can still listen.
     """
     identity = payload.identity or str(current.id)
-    room_name = f"room-{payload.room_id}"
+    # channel_id is effectively required for voice — _fetch_channel_perms
+    # below will 403 without it. We build the LK room name using both ids
+    # so webhooks can route events back to the right channel topic.
+    room_name = _lk_room_name(
+        payload.channel_id if payload.channel_id else "no-channel",
+        payload.room_id,
+    )
 
     # Look up our standing in the channel once and reuse for all checks.
     perms = await _fetch_channel_perms(
@@ -241,7 +276,7 @@ async def voice_mute_participant(
         if payload.target_identity == str(current.id):
             raise HTTPException(400, "Use the in-room mic toggle for self-mute")
 
-    room_name = f"room-{room_id}"
+    room_name = _lk_room_name(payload.channel_id, room_id)
     lkapi = api.LiveKitAPI(
         _livekit_http_url(),
         settings.LIVEKIT_API_KEY,
@@ -319,7 +354,7 @@ async def voice_kick_participant(
     if payload.target_identity == str(current.id):
         raise HTTPException(400, "Use the Leave button to disconnect yourself")
 
-    room_name = f"room-{room_id}"
+    room_name = _lk_room_name(payload.channel_id, room_id)
     lkapi = api.LiveKitAPI(
         _livekit_http_url(),
         settings.LIVEKIT_API_KEY,
@@ -368,7 +403,7 @@ async def voice_move_participant(
         )
 
     # 1. Disconnect from current room.
-    src_room = f"room-{room_id}"
+    src_room = _lk_room_name(payload.channel_id, room_id)
     lkapi = api.LiveKitAPI(
         _livekit_http_url(),
         settings.LIVEKIT_API_KEY,
@@ -416,3 +451,132 @@ async def voice_move_participant(
         raise HTTPException(
             500, "Перемещение не доставлено: не удалось уведомить пользователя"
         )
+
+
+# ---------- Live participant tracking (LiveKit webhooks + snapshot) ----------
+
+# WebhookReceiver verifies the JWT signature LiveKit attaches to each webhook,
+# using the same api_key/secret. Mismatches throw — we 401 the request.
+_webhook_token_verifier = api.TokenVerifier(
+    settings.LIVEKIT_API_KEY, settings.LIVEKIT_API_SECRET
+)
+_webhook_receiver = api.WebhookReceiver(_webhook_token_verifier)
+
+
+@app.post("/api/media/webhook")
+async def livekit_webhook(request: Request) -> dict:
+    """Receive participant_joined / participant_left events from LiveKit.
+
+    Configured via `webhook.urls` in livekit.yaml. Each POST is signed with
+    a JWT (Authorization header). We verify the signature, extract the room
+    name (which encodes channel_id + room_id) and broadcast a small event on
+    Redis topic `channel:<channel_id>:voice` so connected clients can update
+    their voice-room participant counts/lists live.
+    """
+    auth = request.headers.get("Authorization", "")
+    body_bytes = await request.body()
+    try:
+        event = _webhook_receiver.receive(body_bytes.decode("utf-8"), auth)
+    except Exception as e:
+        logger.warning("Webhook signature verification failed: %s", e)
+        raise HTTPException(401, "Invalid webhook signature")
+
+    event_name = getattr(event, "event", "") or ""
+    if event_name not in ("participant_joined", "participant_left"):
+        # We don't care about room_started/finished/track_published etc.
+        return {"ok": True, "ignored": event_name}
+
+    lk_room = getattr(event, "room", None)
+    lk_part = getattr(event, "participant", None)
+    if not lk_room or not lk_part:
+        return {"ok": True, "ignored": "missing-room-or-participant"}
+
+    parsed = _parse_lk_room_name(lk_room.name)
+    if not parsed:
+        # Old-format name from before this deploy — skip silently. Will fix
+        # itself once everyone rejoins.
+        logger.info("Webhook: unparseable room name %r", lk_room.name)
+        return {"ok": True, "ignored": "unparseable-room"}
+    channel_id, room_id = parsed
+
+    payload = {
+        "type": (
+            "voice.participant_joined"
+            if event_name == "participant_joined"
+            else "voice.participant_left"
+        ),
+        "data": {
+            "channel_id": channel_id,
+            "room_id": room_id,
+            "user_id": lk_part.identity,
+        },
+    }
+    try:
+        await redis_pub.publish(
+            f"channel:{channel_id}:voice", json.dumps(payload)
+        )
+    except Exception as e:
+        # Don't fail the webhook — LiveKit retries on non-2xx and we'd just
+        # keep getting the same event. Better to log and move on; on the
+        # next snapshot fetch the client will reconcile.
+        logger.error("Webhook publish failed: %s", e, exc_info=True)
+
+    return {"ok": True}
+
+
+@app.get("/api/media/channels/{channel_id}/voice-participants")
+async def voice_participants_snapshot(
+    channel_id: UUID,
+    request: Request,
+    current: CurrentUser = Depends(get_current_user),
+) -> dict[str, list[str]]:
+    """Return current participants per voice room of this channel.
+
+    Output: {room_id: [user_identity, ...], ...}. Empty rooms (or rooms
+    LiveKit hasn't auto-created yet) are omitted. Used by the frontend for
+    the initial render; the WebSocket stream then keeps it in sync.
+
+    No fancy authorization — being a member of the channel is enough to
+    see voice presence. We rely on channel-service for that check.
+    """
+    perms = await _fetch_channel_perms(
+        str(channel_id), request.headers.get("Authorization")
+    )
+    if not perms:
+        raise HTTPException(403, "Cannot verify channel permissions")
+
+    lkapi = api.LiveKitAPI(
+        _livekit_http_url(),
+        settings.LIVEKIT_API_KEY,
+        settings.LIVEKIT_API_SECRET,
+    )
+    out: dict[str, list[str]] = {}
+    try:
+        rooms = await lkapi.room.list_rooms(api.ListRoomsRequest())
+        # `rooms.rooms` is a list of Room proto messages.
+        for r in rooms.rooms:
+            parsed = _parse_lk_room_name(r.name)
+            if not parsed:
+                continue
+            r_channel, r_room = parsed
+            if r_channel != str(channel_id):
+                continue
+            try:
+                info = await lkapi.room.list_participants(
+                    api.ListParticipantsRequest(room=r.name)
+                )
+                identities = [p.identity for p in info.participants]
+            except Exception as e:
+                logger.warning(
+                    "snapshot: list_participants(%s) failed: %s", r.name, e
+                )
+                identities = []
+            if identities:
+                out[r_room] = identities
+    except Exception as e:
+        logger.error("snapshot: list_rooms failed: %s", e, exc_info=True)
+        raise HTTPException(500, "Не удалось получить список участников")
+    finally:
+        await lkapi.aclose()
+
+    return out

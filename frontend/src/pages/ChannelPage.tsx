@@ -10,6 +10,7 @@ import BanList from "../components/BanList";
 import Avatar from "../components/Avatar";
 import { useMemberRoles } from "../hooks/useMemberRoles";
 import { useMyPermissions } from "../hooks/useMyPermissions";
+import { useVoicePresence } from "../hooks/useVoicePresence";
 import { useWebSocket } from "../hooks/useWebSocket";
 
 interface Channel {
@@ -45,6 +46,10 @@ export default function ChannelPage() {
   const [showBans, setShowBans] = useState(false);
 
   const { perms: myPerms, can } = useMyPermissions(channelId);
+  // Live participant counts per voice room — populated by webhook events
+  // from media-service. Used both for the sidebar badge (N people) and
+  // passed to VoiceRoom for the preview list before joining.
+  const voicePresence = useVoicePresence(channelId);
 
   const { data: channel } = useQuery({
     queryKey: ["channel", channelId],
@@ -195,27 +200,37 @@ export default function ChannelPage() {
           <div className="text-xs uppercase text-muted px-2 py-1 mt-3">Голосовые комнаты</div>
           {rooms
             .filter((r) => r.room_type === "voice")
-            .map((r) => (
-              <div key={r.id} className="flex items-center group">
-                <Link
-                  to={`/channels/${channelId}/rooms/${r.id}`}
-                  className={`flex-1 px-2 py-1 rounded text-sm hover:bg-panel2 truncate ${
-                    r.id === roomId ? "bg-panel2" : ""
-                  }`}
-                >
-                  🔊 {r.name}
-                </Link>
-                {can("MANAGE_CHANNELS") && (
-                  <button
-                    onClick={() => deleteRoom(r.id)}
-                    className="opacity-0 group-hover:opacity-100 text-muted hover:text-red-400 px-1"
-                    title="Удалить комнату"
+            .map((r) => {
+              const count = voicePresence[r.id]?.length ?? 0;
+              return (
+                <div key={r.id} className="flex items-center group">
+                  <Link
+                    to={`/channels/${channelId}/rooms/${r.id}`}
+                    className={`flex-1 px-2 py-1 rounded text-sm hover:bg-panel2 truncate flex items-center gap-1 ${
+                      r.id === roomId ? "bg-panel2" : ""
+                    }`}
                   >
-                    ✕
-                  </button>
-                )}
-              </div>
-            ))}
+                    <span className="truncate">🔊 {r.name}</span>
+                    {/* Discord-style live counter — only shows when someone
+                        is in the room, not "(0)" when empty. */}
+                    {count > 0 && (
+                      <span className="ml-auto shrink-0 text-[10px] bg-accent/30 text-accent rounded-full px-1.5 py-0.5">
+                        {count}
+                      </span>
+                    )}
+                  </Link>
+                  {can("MANAGE_CHANNELS") && (
+                    <button
+                      onClick={() => deleteRoom(r.id)}
+                      className="opacity-0 group-hover:opacity-100 text-muted hover:text-red-400 px-1"
+                      title="Удалить комнату"
+                    >
+                      ✕
+                    </button>
+                  )}
+                </div>
+              );
+            })}
 
           {can("MANAGE_CHANNELS") && (
             <div className="mt-4 p-2 bg-bg rounded space-y-2">
@@ -316,6 +331,7 @@ export default function ChannelPage() {
                 key={currentRoom.id}
                 roomId={currentRoom.id}
                 channelId={channelId!}
+                presentParticipants={voicePresence[currentRoom.id] || []}
               />
             </div>
           )}

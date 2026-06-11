@@ -20,6 +20,10 @@ import { isMoveInProgress } from "../voiceMoveState";
 interface Props {
   roomId: string;
   channelId: string;
+  /** Identities currently in this voice room (from webhook-driven presence).
+   *  Shown as a preview list before the user actually joins, so they know
+   *  who's already inside. */
+  presentParticipants?: string[];
 }
 
 interface ParticipantView {
@@ -60,7 +64,11 @@ function saveLocalVolume(identity: string, value: number): void {
   localStorage.setItem(localVolumeKey(identity), String(value));
 }
 
-export default function VoiceRoom({ roomId, channelId }: Props) {
+export default function VoiceRoom({
+  roomId,
+  channelId,
+  presentParticipants = [],
+}: Props) {
   const userId = useAuthStore((s) => s.userId)!;
   const { can } = useMyPermissions(channelId);
   const { data: roleInfo = {} } = useMemberRoles(channelId);
@@ -328,22 +336,30 @@ export default function VoiceRoom({ roomId, channelId }: Props) {
   // Fetch user-service profiles for everyone currently in this voice room
   // so we can show their username/display name and a colored avatar
   // (the seed = uuid is stable so each user always gets the same color).
+  // We include BOTH active LiveKit participants and the webhook-driven
+  // presence list — the latter feeds the pre-join "who's in there" preview.
   interface VoiceProfile {
     user_id: string;
     username: string;
     display_name: string | null;
   }
-  const participantIds = participants.map((p) => p.identity).sort().join(",");
+  const allIds = Array.from(
+    new Set([
+      ...participants.map((p) => p.identity),
+      ...presentParticipants,
+    ])
+  );
+  const participantIds = allIds.sort().join(",");
   const { data: voiceProfiles = {} } = useQuery<Record<string, VoiceProfile>>({
     queryKey: ["voice-profiles", participantIds],
-    enabled: participants.length > 0,
+    enabled: allIds.length > 0,
     queryFn: async () => {
       const out: Record<string, VoiceProfile> = {};
       await Promise.all(
-        participants.map(async (p) => {
+        allIds.map(async (id) => {
           try {
-            const { data } = await api.get<VoiceProfile>(`/users/${p.identity}`);
-            out[p.identity] = data;
+            const { data } = await api.get<VoiceProfile>(`/users/${id}`);
+            out[id] = data;
           } catch {
             /* fall back to uuid prefix below */
           }
@@ -402,15 +418,40 @@ export default function VoiceRoom({ roomId, channelId }: Props) {
       )}
 
       {!connected ? (
-        can("CONNECT_VOICE") ? (
-          <button onClick={join} className="bg-accent px-4 py-2 rounded">
-            Зайти в голос
-          </button>
-        ) : (
-          <div className="text-sm text-muted">
-            У вас нет прав заходить в голосовые комнаты
-          </div>
-        )
+        <div className="space-y-3">
+          {/* Preview: show who's already inside before the user clicks join.
+              Drives the same data as the sidebar counter so they agree. */}
+          {presentParticipants.length > 0 && (
+            <div className="space-y-1">
+              <div className="text-xs uppercase text-muted">
+                Сейчас в комнате ({presentParticipants.length})
+              </div>
+              {presentParticipants.map((identity) => {
+                const lab = labelFor(identity);
+                return (
+                  <div
+                    key={identity}
+                    className="flex items-center gap-2 text-sm bg-panel2 rounded px-2 py-1"
+                  >
+                    <Avatar seed={identity} name={lab.text} size={24} />
+                    <span style={lab.color ? { color: lab.color } : undefined}>
+                      {lab.text}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          {can("CONNECT_VOICE") ? (
+            <button onClick={join} className="bg-accent px-4 py-2 rounded">
+              Зайти в голос
+            </button>
+          ) : (
+            <div className="text-sm text-muted">
+              У вас нет прав заходить в голосовые комнаты
+            </div>
+          )}
+        </div>
       ) : (
         <>
           {!canPublish && (
